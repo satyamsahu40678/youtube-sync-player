@@ -1,10 +1,10 @@
+import cors from "cors";
+import dotenv from "dotenv";
 import express, { Request, Response } from "express";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
-import cors from "cors";
-import dotenv from "dotenv";
 import prisma from "./db";
-import { RoomState, ClockSyncResponse, RoomStateMessage } from "./types";
+import { ClockSyncResponse, RoomState, RoomStateMessage } from "./types";
 
 dotenv.config();
 
@@ -65,12 +65,14 @@ io.on("connection", (socket) => {
       io.to(roomId).emit("room:participant-count", { count: participantCount });
 
       // Log to database (async, non-blocking)
-      prisma.sessionParticipant.create({
-        data: {
-          roomId,
-          userId,
-        },
-      }).catch(err => console.error("DB error creating participant:", err));
+      prisma.sessionParticipant
+        .create({
+          data: {
+            roomId,
+            userId,
+          },
+        })
+        .catch((err) => console.error("DB error creating participant:", err));
     } catch (error) {
       console.error("Error joining room:", error);
       socket.emit("error", { message: "Failed to join room" });
@@ -78,30 +80,37 @@ io.on("connection", (socket) => {
   });
 
   // Host updates video
-  socket.on("room:update-video", (data: { roomId: string; videoId: string }) => {
-    const { roomId, videoId } = data;
-    const roomState = roomStates.get(roomId) || {
-      videoId: null,
-      status: "PAUSED",
-      videoProgress: 0,
-      serverTimeUpdatedAt: Date.now(),
-    };
+  socket.on(
+    "room:update-video",
+    (data: { roomId: string; videoId: string }) => {
+      const { roomId, videoId } = data;
+      const roomState = roomStates.get(roomId) || {
+        videoId: null,
+        status: "PAUSED",
+        videoProgress: 0,
+        serverTimeUpdatedAt: Date.now(),
+      };
 
-    roomState.videoId = videoId;
-    roomState.videoProgress = 0;
-    roomState.status = "PLAYING";
-    roomState.serverTimeUpdatedAt = Date.now();
+      roomState.videoId = videoId;
+      roomState.videoProgress = 0;
+      roomState.status = "PLAYING";
+      roomState.serverTimeUpdatedAt = Date.now();
 
-    roomStates.set(roomId, roomState);
-    console.log(`[ROOM] Room ${roomId} video updated to ${videoId}`);
+      roomStates.set(roomId, roomState);
+      console.log(`[ROOM] Room ${roomId} video updated to ${videoId}`);
 
-    io.to(roomId).emit("room:state", roomState as RoomStateMessage);
-  });
+      io.to(roomId).emit("room:state", roomState as RoomStateMessage);
+    },
+  );
 
   // Host play/pause control
   socket.on(
     "room:playback-control",
-    (data: { roomId: string; status: "PLAYING" | "PAUSED"; progress: number }) => {
+    (data: {
+      roomId: string;
+      status: "PLAYING" | "PAUSED";
+      progress: number;
+    }) => {
       const { roomId, status, progress } = data;
       const roomState = roomStates.get(roomId);
 
@@ -110,10 +119,12 @@ io.on("connection", (socket) => {
         roomState.videoProgress = progress;
         roomState.serverTimeUpdatedAt = Date.now();
 
-        console.log(`[ROOM] Room ${roomId} playback control: ${status} @ ${progress}s`);
+        console.log(
+          `[ROOM] Room ${roomId} playback control: ${status} @ ${progress}s`,
+        );
         io.to(roomId).emit("room:state", roomState as RoomStateMessage);
       }
-    }
+    },
   );
 
   // Host seek

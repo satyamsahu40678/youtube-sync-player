@@ -1,37 +1,37 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { authService } from '@/lib/auth';
-import { Mail, Lock, ArrowRight } from 'lucide-react';
+import { authService } from "@/lib/auth";
+import { ArrowRight, Mail } from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
 
 export default function SignInPage() {
   const router = useRouter();
-  const [email, setEmail] = useState(authService.getLastEmail() || '');
+  const [email, setEmail] = useState(authService.getLastEmail() || "");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    
+    setError("");
+
     if (!email) {
-      setError('Please enter your email');
+      setError("Please enter your email");
       return;
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setError('Please enter a valid email');
+      setError("Please enter a valid email");
       return;
     }
 
     setLoading(true);
     try {
       await authService.signInWithEmail(email);
-      router.push('/');
+      router.push("/");
     } catch (err) {
-      setError('Sign in failed. Please try again.');
+      setError("Sign in failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -42,7 +42,7 @@ export default function SignInPage() {
     try {
       await authService.signInWithGoogle();
     } catch (err) {
-      setError('Google sign-in failed. Please try again.');
+      setError("Google sign-in failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -62,14 +62,18 @@ export default function SignInPage() {
             YouTube Sync
           </h1>
         </Link>
-        <p className="text-center text-gray-400 mb-8">Welcome back to synchronized streaming</p>
+        <p className="text-center text-gray-400 mb-8">
+          Welcome back to synchronized streaming
+        </p>
 
         {/* Sign In Card */}
         <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-2xl p-8 shadow-2xl mb-6">
           <form onSubmit={handleSignIn} className="space-y-5">
             {/* Email Input */}
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Email Address</label>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Email Address
+              </label>
               <div className="relative">
                 <Mail className="absolute left-3 top-3 w-5 h-5 text-gray-500" />
                 <input
@@ -132,8 +136,11 @@ export default function SignInPage() {
 
         {/* Sign Up Link */}
         <p className="text-center text-gray-400">
-          Don't have an account?{' '}
-          <Link href="/signup" className="text-purple-400 hover:text-purple-300 font-semibold transition">
+          Don't have an account?{" "}
+          <Link
+            href="/signup"
+            className="text-purple-400 hover:text-purple-300 font-semibold transition"
+          >
             Sign Up
           </Link>
         </p>

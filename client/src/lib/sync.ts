@@ -42,7 +42,7 @@ export class NTPClockSync {
       const { rtt, offset } = await this.performSync(socket);
       this.clockOffset = offset;
       console.log(
-        `  Sample ${i + 1}/${this.sampleSize}: RTT=${rtt.toFixed(2)}ms, Offset=${offset.toFixed(2)}ms`
+        `  Sample ${i + 1}/${this.sampleSize}: RTT=${rtt.toFixed(2)}ms, Offset=${offset.toFixed(2)}ms`,
       );
     }
 
@@ -52,7 +52,7 @@ export class NTPClockSync {
       validSamples.reduce((a, b) => a + b, 0) / validSamples.length;
 
     console.log(
-      `✅ Clock sync calibrated. Average RTT: ${avgRtt.toFixed(2)}ms, Offset: ${this.clockOffset.toFixed(2)}ms`
+      `✅ Clock sync calibrated. Average RTT: ${avgRtt.toFixed(2)}ms, Offset: ${this.clockOffset.toFixed(2)}ms`,
     );
   }
 

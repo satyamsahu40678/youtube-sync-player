@@ -1,43 +1,43 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { authService } from '@/lib/auth';
-import { User, Mail, ArrowRight } from 'lucide-react';
+import { authService } from "@/lib/auth";
+import { ArrowRight, Mail, User } from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
 
 export default function SignUpPage() {
   const router = useRouter();
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setError("");
 
     if (!name.trim()) {
-      setError('Please enter your name');
+      setError("Please enter your name");
       return;
     }
 
     if (!email) {
-      setError('Please enter your email');
+      setError("Please enter your email");
       return;
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setError('Please enter a valid email');
+      setError("Please enter a valid email");
       return;
     }
 
     setLoading(true);
     try {
       await authService.signUpWithEmail(email, name);
-      router.push('/');
+      router.push("/");
     } catch (err) {
-      setError('Sign up failed. Please try again.');
+      setError("Sign up failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -48,7 +48,7 @@ export default function SignUpPage() {
     try {
       await authService.signInWithGoogle();
     } catch (err) {
-      setError('Google sign-up failed. Please try again.');
+      setError("Google sign-up failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -68,14 +68,18 @@ export default function SignUpPage() {
             YouTube Sync
           </h1>
         </Link>
-        <p className="text-center text-gray-400 mb-8">Join the synchronized streaming revolution</p>
+        <p className="text-center text-gray-400 mb-8">
+          Join the synchronized streaming revolution
+        </p>
 
         {/* Sign Up Card */}
         <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-2xl p-8 shadow-2xl mb-6">
           <form onSubmit={handleSignUp} className="space-y-5">
             {/* Name Input */}
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Full Name</label>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Full Name
+              </label>
               <div className="relative">
                 <User className="absolute left-3 top-3 w-5 h-5 text-gray-500" />
                 <input
@@ -91,7 +95,9 @@ export default function SignUpPage() {
 
             {/* Email Input */}
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Email Address</label>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Email Address
+              </label>
               <div className="relative">
                 <Mail className="absolute left-3 top-3 w-5 h-5 text-gray-500" />
                 <input
@@ -154,8 +160,11 @@ export default function SignUpPage() {
 
         {/* Sign In Link */}
         <p className="text-center text-gray-400">
-          Already have an account?{' '}
-          <Link href="/signin" className="text-cyan-400 hover:text-cyan-300 font-semibold transition">
+          Already have an account?{" "}
+          <Link
+            href="/signin"
+            className="text-cyan-400 hover:text-cyan-300 font-semibold transition"
+          >
             Sign In
           </Link>
         </p>

@@ -1,19 +1,19 @@
 // Google OAuth configuration
-export const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '';
+export const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
 
 export interface AuthUser {
   id: string;
   email: string;
   name?: string;
   image?: string;
-  provider: 'email' | 'google';
+  provider: "email" | "google";
 }
 
 // localStorage keys
 const AUTH_KEYS = {
-  USER: 'auth_user',
-  TOKEN: 'auth_token',
-  LAST_EMAIL: 'auth_last_email',
+  USER: "auth_user",
+  TOKEN: "auth_token",
+  LAST_EMAIL: "auth_last_email",
 };
 
 export const authService = {
@@ -22,8 +22,8 @@ export const authService = {
     const user: AuthUser = {
       id: `user-${Date.now()}`,
       email,
-      name: name || email.split('@')[0],
-      provider: 'email',
+      name: name || email.split("@")[0],
+      provider: "email",
     };
     localStorage.setItem(AUTH_KEYS.USER, JSON.stringify(user));
     localStorage.setItem(AUTH_KEYS.LAST_EMAIL, email);
@@ -35,8 +35,8 @@ export const authService = {
     const user: AuthUser = {
       id: `user-${Date.now()}`,
       email,
-      name: email.split('@')[0],
-      provider: 'email',
+      name: email.split("@")[0],
+      provider: "email",
     };
     localStorage.setItem(AUTH_KEYS.USER, JSON.stringify(user));
     localStorage.setItem(AUTH_KEYS.LAST_EMAIL, email);
@@ -46,13 +46,13 @@ export const authService = {
   // Sign in with Google (OAuth flow)
   async signInWithGoogle(): Promise<AuthUser | null> {
     if (!GOOGLE_CLIENT_ID) {
-      console.warn('Google Client ID not configured');
+      console.warn("Google Client ID not configured");
       // For demo, create a mock Google user
       return {
         id: `google-${Date.now()}`,
         email: `user-${Date.now()}@gmail.com`,
-        name: 'Google User',
-        provider: 'google',
+        name: "Google User",
+        provider: "google",
       };
     }
 
@@ -65,7 +65,7 @@ export const authService = {
       window.location.href = authUrl;
       return null;
     } catch (error) {
-      console.error('Google sign-in failed:', error);
+      console.error("Google sign-in failed:", error);
       return null;
     }
   },

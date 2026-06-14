@@ -50,7 +50,10 @@ export function isValidYouTubeUrl(url: string): boolean {
 }
 
 // Build embedded YouTube URL
-export function buildYouTubeEmbedUrl(videoId: string, startTime?: number | null): string {
+export function buildYouTubeEmbedUrl(
+  videoId: string,
+  startTime?: number | null,
+): string {
   let url = `https://www.youtube.com/embed/${videoId}`;
   if (startTime && startTime > 0) {
     url += `?start=${startTime}`;
