@@ -1,0 +1,4 @@
+export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && cd /mnt/d/Code/youtube-sync-player/server && npm run dev
+
+
+/mnt/d/Code/youtube-sync-player/test-application.sh

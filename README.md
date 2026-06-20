@@ -2,143 +2,189 @@
 
 > **Real-Time Synchronized Video Streaming with Sub-Millisecond Precision**
 
-A production-ready, full-stack application that enables multiple users to watch YouTube videos in perfect synchronization. Built with Next.js, Node.js, Socket.io, and advanced NTP-style clock synchronization.
+Watch YouTube videos together with perfect synchronization. Host a stream, share the link, and everyone watches in perfect sync.
 
-![Version](https://img.shields.io/badge/version-1.0.0--production-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.0-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Node](https://img.shields.io/badge/node-20%2B-brightgreen)
-![TypeScript](https://img.shields.io/badge/typescript-5.9%2B-blue)
-
----
-
-## 🌟 Features
-
-### Core Features
-
-- ✅ **Host Live Streams** - Share any YouTube video with a unique room URL
-- ✅ **Real-Time Sync** - Sub-100ms drift maintained across all viewers
-- ✅ **Passive Viewer Interface** - Joiners can only control volume, host controls playback
-- ✅ **Authentication** - Email-based sign-in with Google OAuth support
-- ✅ **Room Management** - Create, join, and manage streaming sessions
-- ✅ **Network Metrics** - Real-time display of sync status and latency
-
-### Technical Highlights
-
-- 🔄 **NTP Clock Synchronization** - 5-sample calibration for ±3-5ms accuracy
-- 📊 **PI-Based Playback Rate Controller** - Smooth drift correction without seeking
-- 🌐 **WebSocket with Fallback** - Socket.io automatic fallback to long-polling
-- 💾 **Persistent Storage** - PostgreSQL with Prisma ORM
-- 🎨 **Dark Mode UI** - Beautiful, responsive gradient design
-- 📱 **Mobile Friendly** - Works seamlessly on desktop, tablet, and mobile
+![TypeScript](https://img.shields.io/badge/typescript-5.x-blue)
 
 ---
 
 ## 🚀 Quick Start
 
-### Prerequisites
-
-- Node.js 20+ ([install via nvm](https://github.com/nvm-sh/nvm))
-- npm 11+
-- PostgreSQL (production) or SQLite (development)
-
-### Option 1: Using Make (Recommended)
+### One Command Setup
 
 ```bash
-# Complete setup in one command
-make setup
-
-# Start development servers
-make dev
-
-# Open http://localhost:3000 in your browser
+make quick-start
 ```
 
-### Option 2: Manual Setup
+This single command will:
+1. ✅ Check Node.js and npm are installed
+2. ✅ Create `.env` files with defaults
+3. ✅ Install all dependencies (client + server)
+4. ✅ Generate Prisma client
+5. ✅ Push database schema
+6. ✅ Start both development servers
+
+Then open **http://localhost:3000** in your browser.
+
+### Prerequisites
+
+- **Node.js 20+** ([install via nvm](https://github.com/nvm-sh/nvm))
+- **npm 11+**
+
+### Manual Setup
 
 ```bash
-# Install dependencies
-npm install --prefix client
-npm install --prefix server
+# 1. Install dependencies
+make install-all
 
-# Setup database
-cd server && npx prisma db push && cd ..
+# 2. Setup environment files
+make env-setup
 
-# Start frontend (terminal 1)
-cd client && npm run dev
+# 3. Generate Prisma client & push DB schema
+make generate
+make db-push
 
-# Start backend (terminal 2)
-cd server && npm run dev
+# 4. Start development servers
+make dev
 
-# Open http://localhost:3000
+# 5. Open http://localhost:3000
 ```
 
 ---
 
-## 📖 Usage Guide
+## 🌟 Features
 
-### For Hosts
+### Core
+- ✅ **Host Live Streams** — Share any YouTube video with a unique room URL
+- ✅ **Real-Time Sync** — Sub-100ms drift maintained across all viewers
+- ✅ **Passive Viewer Interface** — Joiners can only control volume, host controls playback
+- ✅ **Authentication** — Email sign-up/sign-in + Google OAuth
+- ✅ **Room Management** — Create, join, and manage streaming sessions
 
-1. **Sign In** - Enter your email and sign in
-2. **Start Stream** - Click "🎬 Host a Stream"
-3. **Paste YouTube URL** - Use any YouTube link (including timestamps)
-   ```
-   https://youtu.be/dQw4w9WgXcQ
-   https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=60s
-   https://youtu.be/-PXivr2hmMA?si=wZkD9nKYzRcehzNS
-   ```
-4. **Click Play** - Video loads and streams
-5. **Share URL** - Copy and share with viewers
-6. **Control Stream** - Use play/pause/seek controls
+### Supported YouTube URL Formats
+```
+https://www.youtube.com/watch?v=dQw4w9WgXcQ
+https://youtu.be/dQw4w9WgXcQ
+https://youtu.be/-PXivr2hmMA?si=wZkD9nKYzRcehzNS
+https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=60s
+```
 
-### For Joiners
+### Technical
+- 🔄 **NTP Clock Synchronization** — 5-sample calibration for ±3-5ms accuracy
+- 📊 **PI-Based Playback Rate Controller** — Smooth drift correction without seeking
+- 🌐 **WebSocket** — Socket.io with automatic fallback to long-polling
+- 💾 **SQLite Database** — Prisma ORM with easy migration
+- 🎨 **Dark Mode UI** — Premium glassmorphism design with animations
+- 📱 **Responsive** — Works on desktop, tablet, and mobile
 
-1. **Receive URL** - Get the share URL from host
-2. **Sign In** - Complete authentication
-3. **Paste Room URL** - URL automatically joins the room
-4. **Watch** - Video syncs in real-time
-5. **Adjust Volume** - Only volume control available
+---
+
+## 📖 Usage
+
+### Hosting a Stream
+
+1. **Sign Up / Sign In** at `http://localhost:3000`
+2. Click **"Host a Stream"**
+3. Paste a YouTube URL and click **Play**
+4. Copy the share URL and send it to viewers
+
+### Joining a Stream
+
+1. Open the share URL **or** go to `http://localhost:3000/join`
+2. Paste the room URL or room ID
+3. Video syncs automatically with the host
+
+---
+
+## 🔑 Google Sign-In Setup (Optional)
+
+Google Sign-In uses the [Google Identity Services](https://developers.google.com/identity/gsi/web) popup flow. To enable it:
+
+### 1. Create OAuth Credentials
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create a new project (or select existing)
+3. Click **Create Credentials** → **OAuth 2.0 Client ID**
+4. Application type: **Web application**
+5. Add **Authorized JavaScript origins**:
+   - `http://localhost:3000` (development)
+   - Your production domain
+6. Copy the **Client ID**
+
+### 2. Configure Environment
+
+Add to `client/.env.local`:
+```env
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=your_client_id_here.apps.googleusercontent.com
+```
+
+### 3. Restart
+
+```bash
+make restart
+```
+
+> **Note:** The app works fully without Google OAuth — email sign-in is always available.
 
 ---
 
 ## 🛠️ Make Targets
 
-All project commands are available via `make`. Run `make help` to see all available targets:
+Run `make help` to see all available commands:
 
-```bash
-# Setup & Installation
-make setup              # Complete setup from scratch
-make install-all        # Install dependencies for both client and server
-make env-setup         # Create .env files
+```
+  Quick Start
+  quick-start       🚀 One command: setup + run (zero intervention)
 
-# Development
-make dev               # Run both servers (recommended)
-make dev-client        # Run only client
-make dev-server        # Run only server
+  Setup & Install
+  setup             Complete setup from scratch
+  install-all       Install dependencies for client and server
+  env-setup         Create .env files with defaults
+  check-node        Verify Node.js and npm are installed
+  check-deps        Verify all dependencies are installed
 
-# Database
-make migrate           # Run database migrations
-make db-push          # Push schema to database
-make db-reset         # ⚠️  Reset database (deletes all data)
-make db-studio        # Open Prisma Studio
+  Development
+  dev               Run both servers with hot reload
+  dev-client        Run only the frontend
+  dev-server        Run only the backend
 
-# Testing & Quality
-make test             # Run end-to-end tests
-make health           # Check if servers are running
-make lint             # Run linter on both projects
-make format           # Format code with Prettier
+  Database
+  generate          Generate Prisma client
+  migrate           Run database migrations
+  db-push           Push schema (dev only)
+  db-reset          ⚠️  Reset database
+  db-studio         Open Prisma Studio
 
-# Production
-make build            # Build both projects
-make start            # Start production servers
+  Testing & Quality
+  test              Run end-to-end tests
+  lint              Run linter
+  format            Format code with Prettier
 
-# Cleanup
-make clean            # Remove node_modules, builds, DB
-make kill-ports       # Kill processes on ports 3000, 4000
-make restart          # Kill and restart all servers
+  Production
+  build             Build for production
+  start             Start production servers
 
-# Information
-make version          # Show version info
-make info             # Show project information
+  Utilities
+  health            Check if servers are running
+  status            Show processes on ports 3000/4000
+  open              Open app in browser
+  logs              Show server logs
+  kill-ports        Kill processes on ports 3000/4000
+  restart           Kill and restart servers
+
+  Cleanup
+  clean             Remove node_modules, builds, DB
+  clean-deps        Remove only node_modules
+  clean-db          Remove only database
+  clean-all         Deep clean everything
+
+  Info
+  version           Show version info
+  info              Show project quick reference
+  show-env          Display environment configuration
 ```
 
 ---
@@ -147,38 +193,37 @@ make info             # Show project information
 
 ```
 youtube-sync-player/
-├── VERSION                          # Version file
-├── README.md                        # This file
-├── Makefile                         # Build automation
-├── PLAN.md                          # Architecture documentation
-├── SETUP_GUIDE.md                   # Detailed setup guide
-├── IMPLEMENTATION_COMPLETE.md       # Implementation details
+├── VERSION                      # Version file (2.0.0)
+├── README.md                    # This file
+├── Makefile                     # Build automation (30+ targets)
 │
 ├── scripts/
-│   ├── start-dev.sh                # Development startup script
-│   └── start-prod.sh               # Production startup script
+│   ├── start-dev.sh            # Development startup script
+│   └── start-prod.sh           # Production startup script
 │
-├── client/                          # Frontend (Next.js 14)
+├── client/                      # Frontend (Next.js + TailwindCSS)
 │   ├── src/
 │   │   ├── app/
-│   │   │   ├── page.tsx            # Landing & Auth page
-│   │   │   ├── host/page.tsx       # Host dashboard
-│   │   │   ├── join/page.tsx       # Joiner dashboard
-│   │   │   └── signup/page.tsx     # Signup page
+│   │   │   ├── layout.tsx      # Root layout (dark mode, Inter font)
+│   │   │   ├── page.tsx        # Landing page
+│   │   │   ├── signin/         # Sign-in page
+│   │   │   ├── signup/         # Sign-up page
+│   │   │   ├── host/           # Host dashboard
+│   │   │   └── join/           # Joiner dashboard
 │   │   └── lib/
-│   │       ├── sync.ts            # NTP sync engine
-│   │       └── types.ts           # TypeScript types
-│   ├── package.json
+│   │       ├── auth.ts         # Auth service (email + Google GIS)
+│   │       ├── sync.ts         # NTP clock sync engine
+│   │       ├── youtube.ts      # YouTube URL parsing
+│   │       └── types.ts        # TypeScript types
 │   └── .env.local
 │
-└── server/                          # Backend (Node.js + Express)
+└── server/                      # Backend (Node.js + Express + Socket.io)
     ├── src/
-    │   ├── index.ts               # Main server file
-    │   └── types.ts               # TypeScript types
+    │   ├── index.ts            # Main server + WebSocket handlers
+    │   ├── db.ts               # Prisma client
+    │   └── types.ts            # TypeScript types
     ├── prisma/
-    │   ├── schema.prisma          # Database schema
-    │   └── migrations/            # Migration files
-    ├── package.json
+    │   └── schema.prisma       # Database schema
     └── .env
 ```
 
@@ -186,309 +231,108 @@ youtube-sync-player/
 
 ## 🔧 Configuration
 
-### Frontend Environment (client/.env.local)
+### Frontend (`client/.env.local`)
 
 ```env
-# API server URL
 NEXT_PUBLIC_SERVER_URL=http://localhost:4000
-
-# Google OAuth (optional)
+# Optional: Google OAuth
 NEXT_PUBLIC_GOOGLE_CLIENT_ID=your_google_client_id
 ```
 
-### Backend Environment (server/.env)
+### Backend (`server/.env`)
 
 ```env
-# Database
 DATABASE_URL="file:./dev.db"
-
-# Server
 PORT=4000
 CLIENT_URL=http://localhost:3000
-
-# Google OAuth (optional)
-GOOGLE_CLIENT_ID=your_google_client_id
-GOOGLE_CLIENT_SECRET=your_google_client_secret
 ```
 
 ---
 
-## 📊 Architecture Overview
+## 📊 Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Users (Web Browser)                     │
-│                                                             │
-│  ┌──────────────────────┐      ┌──────────────────────┐   │
-│  │  Host Dashboard      │      │  Joiner Dashboard    │   │
-│  │  ├─ Play/Pause      │  ⟷   │  ├─ Volume Only      │   │
-│  │  ├─ Seek/Timeline   │       │  ├─ Sync Status      │   │
-│  │  └─ Share URL       │       │  └─ Network Metrics  │   │
-│  └──────────────────────┘      └──────────────────────┘   │
-└────────────────────────────────────────────────────────────┘
-                            ⬇
-                 WebSocket (Socket.io)
-                            ⬇
-┌─────────────────────────────────────────────────────────────┐
-│                    Backend Server                          │
-│              (Node.js + Express + Socket.io)              │
-│                                                            │
-│  ┌──────────────────────────────────────────────────────┐ │
-│  │  NTP Clock Sync Engine                              │ │
-│  │  ├─ 5-sample calibration                            │ │
-│  │  ├─ RTT calculation                                 │ │
-│  │  └─ Clock offset correction                         │ │
-│  └──────────────────────────────────────────────────────┘ │
-│                                                            │
-│  ┌──────────────────────────────────────────────────────┐ │
-│  │  Room Management                                    │ │
-│  │  ├─ Playback state sync                             │ │
-│  │  ├─ Participant tracking                            │ │
-│  │  └─ Event broadcasting                              │ │
-│  └──────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-                            ⬇
-                      Prisma ORM
-                            ⬇
-┌─────────────────────────────────────────────────────────────┐
-│                  PostgreSQL Database                       │
-│                                                             │
-│  ├─ User (email, name, image)                              │
-│  ├─ Room (host, video, status)                             │
-│  └─ SessionParticipant (room, user, joinedAt)              │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                  Web Browser                        │
+│                                                     │
+│  ┌───────────────────┐   ┌───────────────────────┐ │
+│  │  Host Dashboard   │   │  Joiner Dashboard     │ │
+│  │  Play/Pause/Seek  │ ⟷ │  Volume Only          │ │
+│  │  Share URL        │   │  Sync Metrics         │ │
+│  └───────────────────┘   └───────────────────────┘ │
+└───────────────────────────────────────────────────── ┘
+                       ⬇ WebSocket
+┌─────────────────────────────────────────────────────┐
+│         Backend (Express + Socket.io)               │
+│  ├── NTP Clock Sync (5-sample calibration)          │
+│  ├── Room Management (state broadcast)              │
+│  └── REST API (health, room info)                   │
+└──────────────────────────────────────────────────────┘
+                       ⬇ Prisma
+┌─────────────────────────────────────────────────────┐
+│              SQLite Database                        │
+│  ├── User (email, name, image)                      │
+│  ├── Room (host, video, status)                     │
+│  └── SessionParticipant (room, user, joinedAt)      │
+└──────────────────────────────────────────────────────┘
 ```
-
----
-
-## 🔄 Real-Time Synchronization Algorithm
-
-### Phase 1: NTP Clock Calibration
-
-When a joiner connects, the system performs a 5-sample NTP exchange:
-
-```
-Client                  Server
-  |── PING #1 (T1) ──→|
-  |                  |── T2, T3 ──→
-  |← RTT₁, Offset₁ ←|
-
-  [Repeat 4 more times]
-
-  Result: Average of 4 lowest RTT samples
-  Clock accuracy: ±3-5ms ✓
-```
-
-### Phase 2: Continuous Drift Correction
-
-Every 100ms, the client calculates:
-
-```
-Expected Position = VideoProgress + (ServerTime - LastUpdateTime)
-Drift = Expected - Actual
-
-Decision Tree:
-├─ |Drift| < 50ms   → Speed = 1.0x (no correction)
-├─ 50ms < |Drift| < 1.5s → Speed = 1.05x or 0.95x (adjust)
-└─ |Drift| ≥ 1.5s   → Hard seek to expected position
-```
-
-Result: **Seamless playback with < 100ms drift guaranteed**
-
----
-
-## 📈 Performance Metrics
-
-| Metric                | Target  | Achieved   | Status |
-| --------------------- | ------- | ---------- | ------ |
-| RTT (Round-Trip Time) | < 50ms  | 8-15ms     | ✅     |
-| Clock Sync Accuracy   | ±10ms   | ±3-5ms     | ✅     |
-| Playback Drift        | < 100ms | < 50ms     | ✅     |
-| Connection Setup      | < 3s    | ~1.5s      | ✅     |
-| Concurrent Users      | 5+      | 10+ tested | ✅     |
-| Memory per Room       | < 10MB  | ~5MB       | ✅     |
-| CPU Usage             | < 10%   | 2-5%       | ✅     |
-
----
-
-## 🔐 Security Features
-
-- ✅ **Email Authentication** - Secure sign-in flow
-- ✅ **Google OAuth** - Optional OAuth 2.0 integration
-- ✅ **Room Access Control** - Room ID-based access
-- ✅ **Passive Interface** - Joiner controls prevented via overlay
-- ✅ **SQL Injection Prevention** - Prisma ORM protection
-- ✅ **CORS Configuration** - Cross-origin requests validated
-- ✅ **XSS Protection** - React built-in escaping
-
----
-
-## 🚀 Deployment
-
-### Frontend Deployment (Vercel - Recommended)
-
-```bash
-# Connect GitHub repository to Vercel
-# Set environment variables in Vercel dashboard
-# Push to main branch → auto-deploys
-
-# Manual deployment
-vercel
-```
-
-### Backend Deployment (Railway/Render)
-
-```bash
-# Connect GitHub repository
-# Set environment variables
-# Deploy from git
-
-# Or use Docker
-make docker-build
-make docker-run
-```
-
-### Database Deployment
-
-**Option 1: Managed PostgreSQL**
-
-- Supabase
-- PlanetScale
-- AWS RDS
-- Heroku Postgres
-
-**Option 2: Self-Hosted**
-
-- AWS EC2
-- DigitalOcean
-- Linode
-- Google Cloud
-
-Update `DATABASE_URL` in server/.env with production database URL.
 
 ---
 
 ## 🆘 Troubleshooting
 
-### Videos Not Syncing?
-
-- Check RTT in metrics (should be < 100ms)
-- Wait 5-10 seconds for calibration
-- Refresh browser page
-- Check browser console for errors
-
-### Cannot Connect to Backend?
+### Servers Won't Start?
 
 ```bash
-# Verify backend is running
-curl http://localhost:4000/health
-
-# Check if port 4000 is in use
-lsof -i :4000
-
-# Kill and restart
-make kill-ports
-make dev
+make kill-ports    # Kill existing processes
+make restart       # Kill + restart
 ```
-
-### YouTube Video Won't Load?
-
-- Verify URL format: `youtube.com/watch?v=ID` or `youtu.be/ID`
-- Check if video allows embedding (some blocked regions/videos)
-- Open browser developer tools (F12) and check console
-- Look for CORS errors
 
 ### Database Errors?
 
 ```bash
-# Reset database (⚠️  deletes all data)
-make db-reset
-
-# Or check database
-make db-studio
+make db-push       # Re-push schema
+make db-reset      # Nuclear option (deletes all data)
+make db-studio     # Inspect database visually
 ```
+
+### Google Sign-In Not Working?
+
+1. Check `NEXT_PUBLIC_GOOGLE_CLIENT_ID` is set in `client/.env.local`
+2. Verify the Client ID in Google Cloud Console
+3. Ensure `http://localhost:3000` is in Authorized JavaScript Origins
+4. Email sign-in always works as a fallback
 
 ### Port Already in Use?
 
 ```bash
-# Kill processes on ports 3000 and 4000
-make kill-ports
-
-# Or manually
-lsof -i :3000 | awk '{print $2}' | xargs kill -9
-lsof -i :4000 | awk '{print $2}' | xargs kill -9
+make kill-ports    # Kills processes on 3000 and 4000
+make status        # See what's running on those ports
 ```
 
 ---
 
-## 📚 Documentation
+## 📈 Performance
 
-- **PLAN.md** - Comprehensive architecture and algorithm documentation
-- **SETUP_GUIDE.md** - Detailed setup and deployment guide
-- **IMPLEMENTATION_COMPLETE.md** - Implementation details and technical specs
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these guidelines:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+| Metric              | Target  | Achieved   |
+|---------------------|---------|------------|
+| RTT                 | < 50ms  | 8-15ms     |
+| Clock Sync Accuracy | ±10ms   | ±3-5ms     |
+| Playback Drift      | < 100ms | < 50ms     |
+| Connection Setup    | < 3s    | ~1.5s      |
+| Concurrent Users    | 5+      | 10+ tested |
 
 ---
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- YouTube IFrame Player API
-- Socket.io for real-time communication
-- Prisma for database ORM
-- Next.js for frontend framework
-- TailwindCSS for styling
-- NTP Protocol for inspiration
-
----
-
-## 📞 Support
-
-For issues, questions, or suggestions:
-
-- Open an GitHub issue
-- Check existing documentation
-- Review PLAN.md for architecture details
-
----
-
-## 🎬 Ready to Stream?
-
-```bash
-# Start the application
-make dev
-
-# Open your browser
-http://localhost:3000
-
-# Sign in and start streaming!
-```
-
-**Happy synchronized streaming! 🚀✨**
+MIT License — see LICENSE file for details.
 
 ---
 
 <div align="center">
 
-**YouTube Sync Player** | v1.0.0-production
-
-[GitHub](https://github.com) • [Issues](https://github.com/issues) • [Documentation](./PLAN.md)
+**YouTube Sync Player** | v2.0.0
 
 Made with ❤️ for synchronized streaming
 

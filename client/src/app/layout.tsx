@@ -1,20 +1,17 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  variable: "--font-inter",
 });
 
 export const metadata: Metadata = {
-  title: "YouTube Sync Player",
-  description: "Watch YouTube videos together in perfect sync",
+  title: "YouTube Sync Player — Watch Together in Perfect Sync",
+  description:
+    "Real-time synchronized YouTube video streaming with sub-millisecond precision. Host a stream, share the link, and watch together.",
+  keywords: ["youtube", "sync", "watch together", "real-time", "streaming"],
 };
 
 export default function RootLayout({
@@ -23,11 +20,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">{children}</body>
+    <html lang="en" className={`${inter.variable} dark`}>
+      <head>
+        <script src="https://accounts.google.com/gsi/client" async defer />
+      </head>
+      <body className="antialiased bg-[#0a0a12] text-white font-sans">
+        {children}
+      </body>
     </html>
   );
 }

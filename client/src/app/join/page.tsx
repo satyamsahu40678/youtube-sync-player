@@ -3,10 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import Link from 'next/link';
-import { Volume2, VolumeX, Zap, Copy, Check } from 'lucide-react';
+import { Volume2, VolumeX, Zap, Copy, Check, ArrowLeft, RefreshCw } from 'lucide-react';
 import { NTPClockSync, PlaybackRateController } from '@/lib/sync';
 import { RoomState } from '@/lib/types';
-import { extractYouTubeStartTime } from '@/lib/youtube';
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
 
@@ -32,7 +31,6 @@ export default function JoinPage() {
   const expectedPositionRef = useRef(0);
 
   useEffect(() => {
-    // Extract roomId from URL
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const id = params.get('roomId');
@@ -53,15 +51,20 @@ export default function JoinPage() {
 
     let extractedRoomId = urlInput.trim();
 
+    // Check if user accidentally pasted a YouTube URL instead of a room URL
+    if (extractedRoomId.includes('youtube.com/watch') || extractedRoomId.includes('youtu.be/')) {
+      setError('This looks like a YouTube URL. Please paste the room share URL or room ID instead. YouTube URLs are used on the Host page.');
+      return;
+    }
+
     // Extract room ID from URL if full URL is provided
-    // Format: http://localhost:3000/join?roomId=xxx or just xxx
-    const match = extractedRoomId.match(/roomId=([a-zA-Z0-9]+)/);
+    const match = extractedRoomId.match(/roomId=([a-zA-Z0-9-]+)/);
     if (match) {
       extractedRoomId = match[1];
     }
 
-    // Remove any non-alphanumeric characters
-    extractedRoomId = extractedRoomId.replace(/[^a-zA-Z0-9]/g, '');
+    // Remove any non-alphanumeric characters (except hyphens for room IDs)
+    extractedRoomId = extractedRoomId.replace(/[^a-zA-Z0-9-]/g, '');
 
     if (!extractedRoomId) {
       setError('Invalid room ID or URL format');
@@ -70,6 +73,18 @@ export default function JoinPage() {
 
     setRoomId(extractedRoomId);
     setUrlInput('');
+  };
+
+  const handleChangeRoom = () => {
+    if (socket) {
+      socket.disconnect();
+      setSocket(null);
+    }
+    setRoomId('');
+    setVideoId('');
+    setIsConnected(false);
+    setSyncStatus('RESYNCING');
+    setError('');
   };
 
   useEffect(() => {
@@ -85,18 +100,13 @@ export default function JoinPage() {
     socketInstance.on('connect', async () => {
       console.log('✅ Connected to server');
 
-      // Calibrate clock sync
       await clockSync.current.calibrate(socketInstance);
       setIsConnected(true);
       setSyncStatus('SYNCED');
 
-      // Get user ID
       const userId = typeof window !== 'undefined' ? localStorage.getItem('userId') || `joiner-${Date.now()}` : `joiner-${Date.now()}`;
-
-      // Join the room
       socketInstance.emit('room:join', { roomId, userId });
 
-      // Start continuous sync loop
       const syncInterval = setInterval(() => {
         const metrics = clockSync.current.getMetrics();
         setRtt(Math.round(metrics.rtt));
@@ -109,7 +119,6 @@ export default function JoinPage() {
       console.log('📡 Room state received:', state);
       setVideoId(state.videoId || '');
 
-      // Calculate expected position
       if (state.status === 'PLAYING') {
         const serverTime = clockSync.current.getServerTime();
         const timeDelta = (serverTime - state.serverTimeUpdatedAt) / 1000;
@@ -118,7 +127,6 @@ export default function JoinPage() {
         expectedPositionRef.current = state.videoProgress;
       }
 
-      // Update sync status based on drift
       const currentDrift = expectedPositionRef.current - lastPositionRef.current;
       setDrift(Math.abs(currentDrift));
 
@@ -148,7 +156,6 @@ export default function JoinPage() {
     };
   }, [roomId]);
 
-  // Update last position periodically
   useEffect(() => {
     const positionInterval = setInterval(() => {
       lastPositionRef.current = expectedPositionRef.current;
@@ -159,27 +166,28 @@ export default function JoinPage() {
 
   const getSyncStatusColor = () => {
     switch (syncStatus) {
-      case 'SYNCED':
-        return 'from-green-500 to-emerald-500';
-      case 'ADJUSTING':
-        return 'from-yellow-500 to-orange-500';
-      case 'RESYNCING':
-        return 'from-red-500 to-pink-500';
-      default:
-        return 'from-gray-500 to-gray-600';
+      case 'SYNCED': return 'from-emerald-500 to-green-500';
+      case 'ADJUSTING': return 'from-amber-500 to-orange-500';
+      case 'RESYNCING': return 'from-red-500 to-rose-500';
+      default: return 'from-gray-500 to-gray-600';
     }
   };
 
   const getSyncStatusText = () => {
     switch (syncStatus) {
-      case 'SYNCED':
-        return '🟢 Synced';
-      case 'ADJUSTING':
-        return '🟡 Adjusting';
-      case 'RESYNCING':
-        return '🔴 Resyncing';
-      default:
-        return 'Connecting...';
+      case 'SYNCED': return '● Synced';
+      case 'ADJUSTING': return '● Adjusting';
+      case 'RESYNCING': return '● Resyncing';
+      default: return 'Connecting...';
+    }
+  };
+
+  const getSyncDotColor = () => {
+    switch (syncStatus) {
+      case 'SYNCED': return 'bg-emerald-400';
+      case 'ADJUSTING': return 'bg-amber-400';
+      case 'RESYNCING': return 'bg-red-400';
+      default: return 'bg-gray-400';
     }
   };
 
@@ -191,381 +199,232 @@ export default function JoinPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-900 text-white p-4">
+    <div className="min-h-screen bg-[#0a0a12] text-white relative overflow-hidden">
       {/* Animated background */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-0 right-0 w-96 h-96 bg-cyan-500/20 rounded-full blur-3xl -z-10"></div>
-        <div className="absolute bottom-0 left-0 w-96 h-96 bg-blue-500/20 rounded-full blur-3xl -z-10"></div>
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute -top-48 -right-48 w-[500px] h-[500px] bg-cyan-600/12 rounded-full blur-[120px] animate-pulse" />
+        <div className="absolute -bottom-48 -left-48 w-[500px] h-[500px] bg-blue-600/12 rounded-full blur-[120px] animate-pulse" style={{ animationDelay: '1.5s' }} />
       </div>
 
-      <div className="max-w-5xl mx-auto">
-        {/* Header */}
-        <div className="flex justify-between items-center mb-8 flex-wrap gap-4">
-          <Link href="/">
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent cursor-pointer hover:opacity-80 transition">
-              YouTube Sync - JOIN
-            </h1>
-          </Link>
-          <div className={`px-4 py-2 rounded-lg bg-gradient-to-r ${getSyncStatusColor()} text-black font-bold flex items-center gap-2`}>
-            <Zap size={20} />
-            {getSyncStatusText()}
-          </div>
-        </div>
-
-        {videoId && isConnected && roomId ? (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Main Player */}
-            <div className="lg:col-span-2">
-              <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-2xl overflow-hidden shadow-2xl">
-                <div className="aspect-video bg-black relative">
-                  <iframe
-                    ref={playerRef}
-                    src={`https://www.youtube.com/embed/${videoId}?autoplay=1`}
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowFullScreen
-                    className="w-full h-full"
-                  />
-                  {/* Transparent overlay to prevent joiner interactions */}
-                  <div className="absolute inset-0 bg-transparent pointer-events-auto cursor-not-allowed" />
-                </div>
-
-                {/* Status Bar */}
-                <div className="p-4 border-t border-slate-700 text-center text-sm text-gray-400 bg-slate-900/50">
-                  <p>✨ You are a passive viewer. Use the volume controls to adjust audio.</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Sidebar Controls & Info */}
-            <div className="space-y-6">
-              {/* Volume Control */}
-              <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-2xl p-6 shadow-xl">
-                <h3 className="text-lg font-bold mb-4 text-cyan-400">🔊 Audio Control</h3>
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3">
-                    {isMuted ? (
-                      <VolumeX size={24} className="text-red-400" />
-                    ) : (
-                      <Volume2 size={24} className="text-cyan-400" />
-                    )}
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={isMuted ? 0 : volume}
-                      onChange={(e) => setVolume(parseFloat(e.target.value))}
-                      className="flex-1 h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer"
-                      style={{
-                        background: `linear-gradient(to right, rgb(34, 197, 94) 0%, rgb(34, 197, 94) ${volume}%, rgb(51, 65, 85) ${volume}%, rgb(51, 65, 85) 100%)`,
-                      }}
-                    />
-                  </div>
-                  <p className="text-center text-sm text-gray-400">
-                    {isMuted ? '🔇 Muted' : `🔊 ${volume}%`}
-                  </p>
-                  <button
-                    onClick={() => setIsMuted(!isMuted)}
-                    className={`w-full py-2 rounded-lg font-semibold transition ${
-                      isMuted
-                        ? 'bg-slate-700 hover:bg-slate-600 text-white'
-                        : 'bg-cyan-600 hover:bg-cyan-700 text-white'
-                    }`}
-                  >
-                    {isMuted ? '🔇 Unmute' : '🔊 Mute'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Sync Metrics */}
-              <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-2xl p-6 shadow-xl">
-                <h3 className="text-lg font-bold mb-4 text-blue-400">📊 Sync Metrics</h3>
-                <div className="space-y-3 text-sm">
-                  <div className="flex justify-between items-center p-3 bg-slate-700/50 rounded-lg">
-                    <span className="text-gray-400">Status:</span>
-                    <span className={`font-bold ${syncStatus === 'SYNCED' ? 'text-green-400' : syncStatus === 'ADJUSTING' ? 'text-yellow-400' : 'text-red-400'}`}>
-                      {getSyncStatusText()}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center p-3 bg-slate-700/50 rounded-lg">
-                    <span className="text-gray-400">RTT:</span>
-                    <span className="font-mono text-cyan-400 font-bold">{rtt}ms</span>
-                  </div>
-                  <div className="flex justify-between items-center p-3 bg-slate-700/50 rounded-lg">
-                    <span className="text-gray-400">Drift:</span>
-                    <span className="font-mono text-purple-400 font-bold">{Math.round(drift)}ms</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Room Info */}
-              <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-2xl p-6 shadow-xl">
-                <h3 className="text-lg font-bold mb-4 text-pink-400">🔐 Room Info</h3>
-                <div className="space-y-3 text-sm">
-                  <div className="p-3 bg-slate-700/50 rounded-lg">
-                    <p className="text-gray-400 text-xs mb-1">Room ID</p>
-                    <p className="text-cyan-400 font-mono text-xs break-all">{roomId}</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <div className="flex-1 p-3 bg-slate-700/50 rounded-lg text-center">
-                      <p className="text-gray-400 text-xs mb-1">Status</p>
-                      <p className="text-green-400 font-bold">✅ Connected</p>
-                    </div>
-                    <div className="flex-1 p-3 bg-slate-700/50 rounded-lg text-center">
-                      <p className="text-gray-400 text-xs mb-1">Viewers</p>
-                      <p className="text-blue-400 font-bold">{participantCount}</p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={copyRoomUrl}
-                    className="w-full py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold rounded-lg hover:shadow-lg hover:shadow-purple-500/50 transition flex items-center justify-center gap-2"
-                  >
-                    {copied ? (
-                      <>
-                        <Check size={16} />
-                        Copied!
-                      </>
-                    ) : (
-                      <>
-                        <Copy size={16} />
-                        Copy Room URL
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : !roomId ? (
-          // Join Room Input Screen
-          <div className="max-w-2xl mx-auto">
-            <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-2xl p-8 shadow-2xl">
-              <h2 className="text-2xl font-bold mb-2 text-cyan-400">Join a Stream</h2>
-              <p className="text-gray-300 mb-6">Enter the room URL or ID to join a synchronized stream</p>
-
-              <form onSubmit={handleJoinRoom} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">Room URL or ID</label>
-                  <input
-                    type="text"
-                    placeholder="Paste room URL or ID here..."
-                    value={urlInput}
-                    onChange={(e) => setUrlInput(e.target.value)}
-                    className="w-full px-4 py-3 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 transition"
-                  />
-                  <p className="text-xs text-gray-400 mt-2">
-                    ℹ️ Paste the share URL or just the room ID
-                  </p>
-                </div>
-
-                {error && (
-                  <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
-                    ❌ {error}
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  className="w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-semibold rounded-lg hover:shadow-lg hover:shadow-cyan-500/50 transition"
-                >
-                  Join Stream
-                </button>
-              </form>
-
-              <div className="mt-6 p-4 bg-slate-700/30 border border-slate-600 rounded-lg text-sm text-gray-300">
-                <p className="font-semibold mb-2">📌 Examples:</p>
-                <ul className="space-y-1 text-xs text-gray-400">
-                  <li>✓ Room URL: http://localhost:3000/join?roomId=abc123xyz</li>
-                  <li>✓ Room ID: abc123xyz</li>
-                  <li>✓ Share Link: (paste directly)</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        ) : (
-          // Loading screen
-          <div className="flex flex-col items-center justify-center h-64 gap-4">
-            <div className="animate-spin">
-              <Zap size={32} className="text-cyan-400" />
-            </div>
-            <p className="text-gray-400">Loading stream...</p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-    setSocket(socketInstance);
-
-    return () => {
-      socketInstance.disconnect();
-    };
-  }, [roomId, userId]);
-
-  // Update last position periodically
-  useEffect(() => {
-    const positionInterval = setInterval(() => {
-      // In a real app, this would read from the YouTube player's current time
-      // For now, we're simulating the position
-      lastPositionRef.current = expectedPositionRef.current;
-    }, 100);
-
-    return () => clearInterval(positionInterval);
-  }, []);
-
-  const getSyncStatusColor = () => {
-    switch (syncStatus) {
-      case 'SYNCED':
-        return 'from-green-500 to-emerald-500';
-      case 'ADJUSTING':
-        return 'from-yellow-500 to-orange-500';
-      case 'RESYNCING':
-        return 'from-red-500 to-pink-500';
-      default:
-        return 'from-gray-500 to-gray-600';
-    }
-  };
-
-  const getSyncStatusText = () => {
-    switch (syncStatus) {
-      case 'SYNCED':
-        return '🟢 Synced';
-      case 'ADJUSTING':
-        return '🟡 Adjusting';
-      case 'RESYNCING':
-        return '🔴 Resyncing';
-      default:
-        return 'Connecting...';
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white p-6">
-      <div className="max-w-5xl mx-auto">
-        {/* Header */}
-        <div className="flex justify-between items-center mb-8">
-          <Link href="/">
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent cursor-pointer">
-              YouTube Sync - JOIN
-            </h1>
-          </Link>
-          <div className={`px-4 py-2 rounded-lg bg-gradient-to-r ${getSyncStatusColor()} text-black font-bold`}>
-            <div className="flex items-center gap-2">
-              <Zap size={20} />
-              {getSyncStatusText()}
-            </div>
-          </div>
-        </div>
-
-        {videoId && isConnected ? (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Main Player */}
-            <div className="lg:col-span-2">
-              <div className="bg-gray-800/50 backdrop-blur border border-gray-700 rounded-xl overflow-hidden">
-                <div className="aspect-video bg-black relative">
-                  <iframe
-                    ref={playerRef}
-                    src={`https://www.youtube.com/embed/${videoId}?autoplay=0`}
-                    allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowFullScreen
-                    className="w-full h-full"
-                  />
-                  {/* Transparent overlay to prevent joiner interactions */}
-                  <div className="absolute inset-0 bg-transparent pointer-events-auto cursor-not-allowed" />
-                </div>
-
-                {/* Status Bar */}
-                <div className="p-4 border-t border-gray-700 text-center text-sm text-gray-400">
-                  <p>You are a passive viewer. Use the volume controls below to adjust audio.</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Sidebar Controls & Info */}
-            <div className="space-y-6">
-              {/* Volume Control */}
-              <div className="bg-gray-800/50 backdrop-blur border border-gray-700 rounded-xl p-4">
-                <h3 className="text-lg font-bold mb-4">Audio Control</h3>
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3">
-                    {isMuted ? (
-                      <VolumeX size={24} className="text-gray-400" />
-                    ) : (
-                      <Volume2 size={24} className="text-blue-400" />
-                    )}
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={isMuted ? 0 : volume}
-                      onChange={(e) => setVolume(parseFloat(e.target.value))}
-                      className="flex-1"
-                    />
-                  </div>
-                  <p className="text-center text-sm text-gray-400">
-                    {isMuted ? 'Muted' : `${volume}%`}
-                  </p>
-                  <button
-                    onClick={() => setIsMuted(!isMuted)}
-                    className={`w-full py-2 rounded-lg font-semibold transition ${
-                      isMuted
-                        ? 'bg-gray-700 hover:bg-gray-600'
-                        : 'bg-blue-600 hover:bg-blue-700'
-                    }`}
-                  >
-                    {isMuted ? 'Unmute' : 'Mute'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Sync Metrics */}
-              <div className="bg-gray-800/50 backdrop-blur border border-gray-700 rounded-xl p-4">
-                <h3 className="text-lg font-bold mb-3">📊 Sync Metrics</h3>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Status:</span>
-                    <span className={`font-bold ${syncStatus === 'SYNCED' ? 'text-green-400' : ''}`}>
-                      {getSyncStatusText()}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">RTT:</span>
-                    <span className="font-mono">{rtt}ms</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Drift:</span>
-                    <span className="font-mono">
-                      {Math.abs(expectedPositionRef.current - lastPositionRef.current).toFixed(0)}ms
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Room Info */}
-              <div className="bg-gray-800/50 backdrop-blur border border-gray-700 rounded-xl p-4">
-                <h3 className="text-lg font-bold mb-3">🔐 Room Info</h3>
-                <div className="text-xs text-gray-400 space-y-2">
-                  <p>
-                    <span className="text-gray-300 block font-mono break-all">{roomId}</span>
-                  </p>
-                  <p>✅ Connected</p>
-                  <p>🔄 Synchronized playback</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center h-64 gap-4">
-            <p className="text-gray-400">
-              {roomId ? 'Loading stream...' : 'No room ID provided'}
-            </p>
-            {!isConnected && roomId && (
-              <div className="animate-spin">
-                <Zap size={32} className="text-blue-400" />
+      <div className="relative z-10 p-4 sm:p-6">
+        <div className="max-w-5xl mx-auto">
+          {/* Header */}
+          <div className="flex justify-between items-center mb-8 flex-wrap gap-4">
+            <Link href="/" className="group flex items-center gap-3">
+              <ArrowLeft size={18} className="text-gray-500 group-hover:text-cyan-400 transition-colors" />
+              <h1 className="text-2xl sm:text-3xl font-extrabold bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
+                Join Stream
+              </h1>
+            </Link>
+            {isConnected && (
+              <div className={`px-4 py-2 rounded-xl bg-gradient-to-r ${getSyncStatusColor()} text-white text-sm font-bold flex items-center gap-2 shadow-lg`}>
+                <Zap size={14} />
+                {getSyncStatusText()}
               </div>
             )}
           </div>
-        )}
+
+          {videoId && isConnected && roomId ? (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Main Player */}
+              <div className="lg:col-span-2">
+                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl">
+                  <div className="aspect-video bg-black relative">
+                    <iframe
+                      ref={playerRef}
+                      src={`https://www.youtube.com/embed/${videoId}?autoplay=1`}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                      className="w-full h-full"
+                    />
+                    {/* Transparent overlay to prevent joiner interactions */}
+                    <div className="absolute inset-0 bg-transparent pointer-events-auto cursor-not-allowed" />
+                  </div>
+
+                  {/* Status Bar */}
+                  <div className="p-4 border-t border-white/[0.06] text-center text-sm text-gray-400 bg-white/[0.02]">
+                    <p>✨ You are a passive viewer — use the volume controls to adjust audio</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sidebar Controls & Info */}
+              <div className="space-y-5">
+                {/* Volume Control */}
+                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
+                  <h3 className="text-base font-bold mb-4 text-cyan-400 flex items-center gap-2">
+                    <Volume2 size={16} />
+                    Audio Control
+                  </h3>
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-3">
+                      {isMuted ? (
+                        <VolumeX size={20} className="text-red-400 shrink-0" />
+                      ) : (
+                        <Volume2 size={20} className="text-cyan-400 shrink-0" />
+                      )}
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={isMuted ? 0 : volume}
+                        onChange={(e) => setVolume(parseFloat(e.target.value))}
+                        className="flex-1 h-1.5 rounded-lg appearance-none cursor-pointer"
+                        style={{
+                          background: `linear-gradient(to right, rgb(6, 182, 212) 0%, rgb(6, 182, 212) ${volume}%, rgba(255,255,255,0.06) ${volume}%, rgba(255,255,255,0.06) 100%)`,
+                        }}
+                      />
+                    </div>
+                    <p className="text-center text-xs text-gray-500 font-medium">
+                      {isMuted ? '🔇 Muted' : `${volume}%`}
+                    </p>
+                    <button
+                      onClick={() => setIsMuted(!isMuted)}
+                      className={`w-full py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${
+                        isMuted
+                          ? 'bg-white/[0.05] border border-white/[0.08] hover:bg-white/[0.08] text-gray-300'
+                          : 'bg-cyan-600/20 border border-cyan-500/30 hover:bg-cyan-600/30 text-cyan-300'
+                      }`}
+                    >
+                      {isMuted ? 'Unmute' : 'Mute'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Sync Metrics */}
+                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
+                  <h3 className="text-base font-bold mb-4 text-blue-400">📊 Sync Metrics</h3>
+                  <div className="space-y-2.5">
+                    <div className="flex justify-between items-center p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
+                      <span className="text-gray-500 text-sm">Status</span>
+                      <span className="flex items-center gap-2 text-sm font-bold">
+                        <div className={`w-2 h-2 rounded-full ${getSyncDotColor()} ${syncStatus === 'SYNCED' ? '' : 'animate-pulse'}`} />
+                        <span className={syncStatus === 'SYNCED' ? 'text-emerald-400' : syncStatus === 'ADJUSTING' ? 'text-amber-400' : 'text-red-400'}>
+                          {syncStatus}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
+                      <span className="text-gray-500 text-sm">RTT</span>
+                      <span className="font-mono text-cyan-400 font-bold text-sm">{rtt}ms</span>
+                    </div>
+                    <div className="flex justify-between items-center p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
+                      <span className="text-gray-500 text-sm">Drift</span>
+                      <span className="font-mono text-violet-400 font-bold text-sm">{Math.round(drift)}ms</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Room Info */}
+                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
+                  <h3 className="text-base font-bold mb-4 text-rose-400">🔐 Room Info</h3>
+                  <div className="space-y-3">
+                    <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
+                      <p className="text-gray-500 text-xs mb-1">Room ID</p>
+                      <p className="text-cyan-400 font-mono text-xs break-all">{roomId}</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04] text-center">
+                        <p className="text-gray-500 text-xs mb-1">Status</p>
+                        <p className="text-emerald-400 font-bold text-sm">Connected</p>
+                      </div>
+                      <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04] text-center">
+                        <p className="text-gray-500 text-xs mb-1">Viewers</p>
+                        <p className="text-blue-400 font-bold text-sm">{participantCount}</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={copyRoomUrl}
+                      className="w-full py-2.5 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 border border-violet-500/30 text-violet-300 font-semibold rounded-xl hover:from-violet-600/30 hover:to-fuchsia-600/30 transition-all duration-200 flex items-center justify-center gap-2 text-sm"
+                    >
+                      {copied ? (
+                        <>
+                          <Check size={14} />
+                          Copied!
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={14} />
+                          Copy Room URL
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={handleChangeRoom}
+                      className="w-full py-2.5 bg-white/[0.03] border border-white/[0.06] text-gray-400 font-medium rounded-xl hover:bg-white/[0.06] hover:text-white transition-all duration-200 flex items-center justify-center gap-2 text-sm"
+                    >
+                      <RefreshCw size={14} />
+                      Change Room
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : !roomId ? (
+            // Join Room Input Screen
+            <div className="max-w-2xl mx-auto pt-8">
+              <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-8 shadow-2xl">
+                <h2 className="text-2xl font-extrabold mb-2 bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
+                  Join a Stream
+                </h2>
+                <p className="text-gray-400 mb-6 text-sm">
+                  Enter the room URL or ID shared by the host to join a synchronized stream
+                </p>
+
+                <form onSubmit={handleJoinRoom} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">Room URL or ID</label>
+                    <input
+                      type="text"
+                      placeholder="Paste room URL or ID here..."
+                      value={urlInput}
+                      onChange={(e) => setUrlInput(e.target.value)}
+                      className="w-full px-4 py-3.5 bg-white/[0.03] border border-white/[0.08] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/10 transition-all duration-200"
+                    />
+                    <p className="text-xs text-gray-500 mt-2">
+                      ℹ️ Paste the share URL from the host or just the room ID
+                    </p>
+                  </div>
+
+                  {error && (
+                    <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
+                      ❌ {error}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    className="w-full py-3.5 bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-semibold rounded-xl hover:shadow-lg hover:shadow-cyan-500/25 hover:-translate-y-0.5 transition-all duration-200"
+                  >
+                    Join Stream
+                  </button>
+                </form>
+
+                <div className="mt-6 p-4 bg-white/[0.02] border border-white/[0.04] rounded-xl">
+                  <p className="font-semibold mb-2 text-sm text-gray-300">📌 Accepted formats:</p>
+                  <ul className="space-y-1.5 text-xs text-gray-500">
+                    <li className="flex items-center gap-2">
+                      <span className="text-emerald-400">✓</span>
+                      <span className="font-mono">http://localhost:3000/join?roomId=room-1234567890</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="text-emerald-400">✓</span>
+                      <span className="font-mono">room-1234567890</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          ) : (
+            // Loading screen
+            <div className="flex flex-col items-center justify-center h-64 gap-4">
+              <div className="relative">
+                <div className="w-12 h-12 border-2 border-white/[0.06] border-t-cyan-400 rounded-full animate-spin" />
+              </div>
+              <p className="text-gray-500 text-sm">Connecting to stream...</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
