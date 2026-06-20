@@ -7,6 +7,10 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# Resolve project root as absolute path ONCE
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
@@ -15,7 +19,7 @@ pkill -f "npm run dev" || true
 sleep 1
 
 # Start backend in background
-cd "$(dirname "$0")/../server" || exit 1
+cd "$PROJECT_ROOT/server" || exit 1
 npm run dev > /tmp/youtube-sync-server.log 2>&1 &
 SERVER_PID=$!
 echo -e "${BLUE}Backend server started (PID: $SERVER_PID)${NC}"
@@ -31,7 +35,7 @@ for i in {1..30}; do
 done
 
 # Start frontend in background
-cd "$(dirname "$0")/../client" || exit 1
+cd "$PROJECT_ROOT/client" || exit 1
 npm run dev > /tmp/youtube-sync-client.log 2>&1 &
 CLIENT_PID=$!
 echo -e "${BLUE}Frontend server started (PID: $CLIENT_PID)${NC}"
