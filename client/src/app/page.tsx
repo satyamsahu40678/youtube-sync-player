@@ -3,15 +3,90 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { authService, AuthUser } from '@/lib/auth';
-import { Play, Users, Zap, Lock, LogOut, Sparkles } from 'lucide-react';
+import { Play, Users, Zap, Lock, LogOut, Sparkles, Trash2, Video, Radio } from 'lucide-react';
+
+const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
+
+interface ActiveRoom {
+  id: string;
+  title: string;
+  hostName: string;
+  participantCount: number;
+}
+
+interface HistoryRoom {
+  id: string;
+  title: string;
+  createdAt?: string;
+  joinedAt?: string;
+}
 
 export default function Home() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [googleError, setGoogleError] = useState('');
+  
+  const [activeRooms, setActiveRooms] = useState<ActiveRoom[]>([]);
+  const [hostedHistory, setHostedHistory] = useState<HistoryRoom[]>([]);
+  const [joinedHistory, setJoinedHistory] = useState<HistoryRoom[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
   useEffect(() => {
     setUser(authService.getCurrentUser());
+    fetchActiveRooms();
   }, []);
+
+  useEffect(() => {
+    if (user) {
+      fetchHistory(user.id);
+    }
+  }, [user]);
+
+  const fetchActiveRooms = async () => {
+    try {
+      const res = await fetch(`${SERVER_URL}/rooms/active`);
+      if (res.ok) {
+        const data = await res.json();
+        setActiveRooms(data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch active rooms', e);
+    }
+  };
+
+  const fetchHistory = async (userId: string) => {
+    setIsLoadingHistory(true);
+    try {
+      const res = await fetch(`${SERVER_URL}/users/${userId}/history`);
+      if (res.ok) {
+        const data = await res.json();
+        setHostedHistory(data.hosted);
+        setJoinedHistory(data.joined);
+      }
+    } catch (e) {
+      console.error('Failed to fetch history', e);
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
+  const handleDeleteHistory = async (roomId: string, type: 'hosted' | 'joined') => {
+    if (!user) return;
+    try {
+      const res = await fetch(`${SERVER_URL}/history/${type}/${roomId}?userId=${user.id}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        // Optimistic UI update
+        if (type === 'hosted') {
+          setHostedHistory(prev => prev.filter(r => r.id !== roomId));
+        } else {
+          setJoinedHistory(prev => prev.filter(r => r.id !== roomId));
+        }
+      }
+    } catch (e) {
+      console.error(`Failed to delete ${type} history`, e);
+    }
+  };
 
   const handleSignOut = () => {
     authService.signOut();
@@ -31,7 +106,7 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a12] text-white relative overflow-hidden">
+    <div className="min-h-screen bg-[#0a0a12] text-white relative overflow-hidden pb-20">
       {/* Animated gradient orbs */}
       <div className="fixed inset-0 pointer-events-none">
         <div className="absolute -top-48 -right-48 w-[600px] h-[600px] bg-purple-600/15 rounded-full blur-[120px] animate-pulse" />
@@ -104,6 +179,35 @@ export default function Home() {
               </div>
             </div>
 
+            {/* Top Active Rooms Section (Logged Out) */}
+            {activeRooms.length > 0 && (
+              <div className="max-w-4xl mx-auto mb-16">
+                <div className="flex items-center gap-2 mb-6">
+                  <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <h2 className="text-2xl font-bold text-white/90">Live Rooms</h2>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                  {activeRooms.map((room) => (
+                    <Link href={`/join?roomId=${room.id}`} key={room.id}>
+                      <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-xl p-5 hover:bg-white/[0.06] hover:border-white/[0.12] transition-all duration-200 hover:-translate-y-1 cursor-pointer">
+                        <div className="flex justify-between items-start mb-3">
+                          <h3 className="font-bold text-white/90 truncate mr-2">{room.title}</h3>
+                          <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded-md shrink-0">
+                            <Users size={12} />
+                            {room.participantCount}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-400 flex items-center gap-1.5">
+                          <Radio size={14} className="text-violet-400" />
+                          Host: <span className="text-gray-300 font-medium truncate">{room.hostName}</span>
+                        </p>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Auth Actions */}
             <div className="max-w-md mx-auto">
               <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-8 shadow-2xl">
@@ -153,52 +257,181 @@ export default function Home() {
             </div>
           </>
         ) : (
-          <div className="max-w-2xl mx-auto pt-16 sm:pt-24 animate-fadeIn">
-            {/* Welcome Card */}
-            <div className="relative bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-8 sm:p-10 mb-6 shadow-2xl overflow-hidden">
+          <div className="max-w-5xl mx-auto pt-8 sm:pt-16 animate-fadeIn">
+            {/* Welcome Dashboard */}
+            <div className="relative bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-8 sm:p-10 mb-8 shadow-2xl overflow-hidden flex flex-col md:flex-row md:items-center justify-between gap-6">
               {/* Card glow effect */}
-              <div className="absolute -top-24 -right-24 w-48 h-48 bg-violet-500/10 rounded-full blur-3xl" />
-              <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-cyan-500/10 rounded-full blur-3xl" />
+              <div className="absolute -top-24 -right-24 w-48 h-48 bg-violet-500/10 rounded-full blur-3xl pointer-events-none" />
+              <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
 
-              <div className="relative">
-                {user.image && (
-                  <img src={user.image} alt="" className="w-16 h-16 rounded-full border-2 border-violet-500/30 mb-4" />
+              <div className="relative z-10 flex items-center gap-6">
+                {user.image ? (
+                  <img src={user.image} alt="" className="w-16 h-16 rounded-full border-2 border-violet-500/30" />
+                ) : (
+                  <div className="w-16 h-16 rounded-full border-2 border-violet-500/30 bg-violet-500/10 flex items-center justify-center text-xl font-bold text-violet-300">
+                    {user.name?.[0]?.toUpperCase() || user.email[0].toUpperCase()}
+                  </div>
                 )}
-                <h2 className="text-3xl sm:text-4xl font-extrabold mb-2">
-                  <span className="bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                <div>
+                  <h2 className="text-2xl sm:text-3xl font-extrabold mb-1">
                     Welcome back{user.name ? `, ${user.name}` : ''}!
-                  </span>
-                </h2>
-                <p className="text-gray-400 mb-8">
-                  Signed in as <span className="font-medium text-white/80">{user.email}</span>
-                </p>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <Link href="/host">
-                    <button className="w-full py-4 bg-gradient-to-r from-emerald-600 to-green-600 text-white font-bold rounded-xl hover:shadow-lg hover:shadow-emerald-500/25 hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-center gap-2">
-                      <Play size={20} />
-                      Host a Stream
-                    </button>
-                  </Link>
-
-                  <Link href="/join">
-                    <button className="w-full py-4 bg-gradient-to-r from-blue-600 to-cyan-600 text-white font-bold rounded-xl hover:shadow-lg hover:shadow-blue-500/25 hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-center gap-2">
-                      <Users size={20} />
-                      Join a Stream
-                    </button>
-                  </Link>
+                  </h2>
+                  <p className="text-gray-400 text-sm">
+                    {user.email}
+                  </p>
                 </div>
+              </div>
+
+              <div className="relative z-10 flex gap-3">
+                <Link href="/host">
+                  <button className="px-6 py-3 bg-gradient-to-r from-emerald-600 to-green-600 text-white font-bold rounded-xl hover:shadow-lg hover:shadow-emerald-500/25 hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-center gap-2">
+                    <Play size={18} />
+                    Host
+                  </button>
+                </Link>
+
+                <Link href="/join">
+                  <button className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white font-bold rounded-xl hover:shadow-lg hover:shadow-blue-500/25 hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-center gap-2">
+                    <Users size={18} />
+                    Join
+                  </button>
+                </Link>
+
+                <button
+                  onClick={handleSignOut}
+                  className="px-4 py-3 bg-white/[0.05] border border-white/[0.08] text-gray-300 font-medium rounded-xl hover:bg-white/[0.08] hover:text-white transition-all duration-200 flex items-center justify-center"
+                  title="Sign Out"
+                >
+                  <LogOut size={18} />
+                </button>
               </div>
             </div>
 
-            {/* Sign Out */}
-            <button
-              onClick={handleSignOut}
-              className="w-full py-3 bg-white/[0.03] border border-white/[0.06] text-gray-400 font-medium rounded-xl hover:bg-white/[0.06] hover:text-white transition-all duration-200 flex items-center justify-center gap-2"
-            >
-              <LogOut size={16} />
-              Sign Out
-            </button>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* History Section */}
+              <div className="lg:col-span-2 space-y-8">
+                {/* Hosted Rooms */}
+                <div>
+                  <h3 className="text-xl font-bold text-white/90 mb-4 flex items-center gap-2">
+                    <Video className="text-violet-400" size={20} />
+                    Your Hosted Rooms
+                  </h3>
+                  
+                  {isLoadingHistory ? (
+                    <div className="text-center py-8 text-gray-500 text-sm">Loading history...</div>
+                  ) : hostedHistory.length === 0 ? (
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-xl p-8 text-center">
+                      <p className="text-gray-500 text-sm">You haven't hosted any rooms yet.</p>
+                      <Link href="/host">
+                        <span className="text-violet-400 hover:text-violet-300 text-sm font-medium mt-2 inline-block transition-colors">Start your first stream &rarr;</span>
+                      </Link>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {hostedHistory.map(room => (
+                        <div key={room.id} className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4 flex items-center justify-between group hover:bg-white/[0.05] transition-colors">
+                          <div className="flex-1 min-w-0 pr-4">
+                            <h4 className="font-bold text-gray-200 truncate">{room.title}</h4>
+                            <p className="text-xs text-gray-500 font-mono mt-1">ID: {room.id.slice(0, 12)}...</p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <Link href={`/host?roomId=${room.id}`}>
+                              <button className="px-3 py-1.5 bg-violet-500/10 text-violet-400 border border-violet-500/20 rounded-lg text-xs font-bold hover:bg-violet-500/20 transition-colors">
+                                Re-host
+                              </button>
+                            </Link>
+                            <button 
+                              onClick={() => handleDeleteHistory(room.id, 'hosted')}
+                              className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Joined Rooms */}
+                <div>
+                  <h3 className="text-xl font-bold text-white/90 mb-4 flex items-center gap-2">
+                    <Users className="text-blue-400" size={20} />
+                    Recently Joined
+                  </h3>
+                  
+                  {isLoadingHistory ? (
+                    <div className="text-center py-8 text-gray-500 text-sm">Loading history...</div>
+                  ) : joinedHistory.length === 0 ? (
+                    <div className="bg-white/[0.02] border border-white/[0.04] rounded-xl p-8 text-center">
+                      <p className="text-gray-500 text-sm">You haven't joined any rooms yet.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {joinedHistory.map(room => (
+                        <div key={room.id} className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4 flex items-center justify-between group hover:bg-white/[0.05] transition-colors">
+                          <div className="flex-1 min-w-0 pr-4">
+                            <h4 className="font-bold text-gray-200 truncate">{room.title}</h4>
+                            <p className="text-xs text-gray-500 font-mono mt-1">ID: {room.id.slice(0, 12)}...</p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <Link href={`/join?roomId=${room.id}`}>
+                              <button className="px-3 py-1.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-lg text-xs font-bold hover:bg-blue-500/20 transition-colors">
+                                Re-join
+                              </button>
+                            </Link>
+                            <button 
+                              onClick={() => handleDeleteHistory(room.id, 'joined')}
+                              className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Sidebar: Top Active Rooms */}
+              <div className="lg:col-span-1">
+                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 sticky top-6">
+                  <h3 className="text-lg font-bold text-white/90 mb-4 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse block" />
+                    Top Live Rooms
+                  </h3>
+
+                  {activeRooms.length === 0 ? (
+                    <div className="text-center py-8 text-gray-500 text-sm">
+                      No active rooms right now. Be the first to host!
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {activeRooms.map((room) => (
+                        <Link href={`/join?roomId=${room.id}`} key={room.id}>
+                          <div className="group block p-3 bg-white/[0.02] border border-white/[0.04] rounded-xl hover:bg-white/[0.06] hover:border-emerald-500/30 transition-all duration-200">
+                            <div className="flex justify-between items-start mb-1.5">
+                              <h4 className="font-bold text-sm text-gray-200 group-hover:text-emerald-400 transition-colors truncate pr-2">
+                                {room.title}
+                              </h4>
+                              <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded shrink-0">
+                                <Users size={10} />
+                                {room.participantCount}
+                              </span>
+                            </div>
+                            <p className="text-xs text-gray-500 flex items-center gap-1.5 truncate">
+                              <Radio size={12} className="text-violet-400" />
+                              <span className="truncate">{room.hostName}</span>
+                            </p>
+                          </div>
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </div>

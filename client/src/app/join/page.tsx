@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import Link from 'next/link';
-import { Volume2, VolumeX, Zap, Copy, Check, ArrowLeft, RefreshCw } from 'lucide-react';
+import { Volume2, VolumeX, Zap, Copy, Check, ArrowLeft, RefreshCw, Music } from 'lucide-react';
 import { NTPClockSync } from '@/lib/sync';
 import { RoomState } from '@/lib/types';
 import YouTube, { YouTubeEvent, YouTubePlayer } from 'react-youtube';
@@ -15,6 +15,7 @@ export default function JoinPage() {
   const [roomId, setRoomId] = useState('');
   const [urlInput, setUrlInput] = useState('');
   const [videoId, setVideoId] = useState('');
+  const [videoTitle, setVideoTitle] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'SYNCED' | 'ADJUSTING' | 'RESYNCING'>('RESYNCING');
   const [rtt, setRtt] = useState(0);
@@ -24,6 +25,7 @@ export default function JoinPage() {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
   const [participantCount, setParticipantCount] = useState(1);
+  const [isAudioMode, setIsAudioMode] = useState(false);
 
   const playerRef = useRef<YouTubePlayer | null>(null);
   const clockSync = useRef(new NTPClockSync());
@@ -36,6 +38,10 @@ export default function JoinPage() {
       const id = params.get('roomId');
       if (id) {
         setRoomId(id);
+      }
+      const mode = params.get('mode');
+      if (mode === 'audio') {
+        setIsAudioMode(true);
       }
     }
   }, []);
@@ -105,7 +111,23 @@ export default function JoinPage() {
       setSyncStatus('SYNCED');
 
       const userId = typeof window !== 'undefined' ? localStorage.getItem('userId') || `joiner-${Date.now()}` : `joiner-${Date.now()}`;
-      socketInstance.emit('room:join', { roomId, userId });
+      const userStr = typeof window !== 'undefined' ? localStorage.getItem('auth_user') : null;
+      let userName = '';
+      let userEmail = '';
+      if (userStr) {
+        try {
+          const user = JSON.parse(userStr);
+          userName = user.name || '';
+          userEmail = user.email || '';
+        } catch (e) {}
+      }
+
+      socketInstance.emit('room:join', { 
+        roomId, 
+        userId,
+        userName,
+        userEmail
+      });
 
       const syncInterval = setInterval(() => {
         const metrics = clockSync.current.getMetrics();
@@ -118,6 +140,9 @@ export default function JoinPage() {
     socketInstance.on('room:state', (state: RoomState) => {
       console.log('📡 Room state received:', state);
       setVideoId(state.videoId || '');
+      if (state.videoTitle) {
+        setVideoTitle(state.videoTitle);
+      }
 
       if (state.status === 'PLAYING') {
         const serverTime = clockSync.current.getServerTime();
@@ -167,18 +192,12 @@ export default function JoinPage() {
         const driftSeconds = expectedPositionRef.current - currentVideoTime;
         setDrift(Math.abs(driftSeconds * 1000));
 
-        if (Math.abs(driftSeconds) > 1.5) {
-          // Hard seek if drift is more than 1.5s
+        if (Math.abs(driftSeconds) > 2.0) {
+          // Hard seek if drift is more than 2s
           playerRef.current.seekTo(expectedPositionRef.current, true);
           setSyncStatus('RESYNCING');
-        } else if (Math.abs(driftSeconds) > 0.1) {
-          // Soft adjust via playback rate
-          const newRate = driftSeconds > 0 ? 1.05 : 0.95;
-          playerRef.current.setPlaybackRate(newRate);
-          setSyncStatus('ADJUSTING');
         } else {
-          // In sync
-          playerRef.current.setPlaybackRate(1.0);
+          // In sync (natural YouTube buffering handles small drift)
           setSyncStatus('SYNCED');
         }
       } catch (e) {}
@@ -210,6 +229,16 @@ export default function JoinPage() {
     }
     if (isPlayingRef.current) {
       playerRef.current.playVideo();
+    }
+  };
+
+  const onPlayerStateChange = (event: YouTubeEvent) => {
+    // Prevent looping or auto-playing when it shouldn't
+    const state = event.data;
+    if (state === 0) { // ENDED
+      event.target.pauseVideo();
+    } else if (state === 1 && !isPlayingRef.current) { // Playing but host is paused
+      event.target.pauseVideo();
     }
   };
 
@@ -265,6 +294,15 @@ export default function JoinPage() {
                 Join Stream
               </h1>
             </Link>
+            {roomId && (
+              <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl px-4 py-2 flex items-center gap-2 max-w-sm w-full sm:w-auto">
+                <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider">Room</p>
+                  <p className="text-sm font-mono font-bold text-cyan-400 truncate">{videoTitle || `${roomId.slice(0, 16)}...`}</p>
+                </div>
+              </div>
+            )}
             {isConnected && (
               <div className={`px-4 py-2 rounded-xl bg-gradient-to-r ${getSyncStatusColor()} text-white text-sm font-bold flex items-center gap-2 shadow-lg`}>
                 <Zap size={14} />
@@ -278,7 +316,7 @@ export default function JoinPage() {
               {/* Main Player */}
               <div className="lg:col-span-2">
                 <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl">
-                  <div className="aspect-video bg-black relative">
+                  <div className={`aspect-video bg-black relative ${isAudioMode ? 'hidden' : 'block'}`}>
                     <YouTube
                       videoId={videoId}
                       opts={{
@@ -293,11 +331,50 @@ export default function JoinPage() {
                         },
                       }}
                       onReady={onPlayerReady}
+                      onStateChange={onPlayerStateChange}
                       className="absolute inset-0 w-full h-full"
                     />
                     {/* Transparent overlay to prevent joiner interactions */}
                     <div className="absolute inset-0 bg-transparent pointer-events-auto cursor-not-allowed" />
                   </div>
+
+                  {isAudioMode && (
+                    <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center relative overflow-hidden">
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20">
+                         {/* Simple visualizer bars effect */}
+                         <div className="flex items-center gap-2 h-32">
+                           {[...Array(12)].map((_, i) => (
+                             <div key={i} className={`w-3 bg-cyan-400 rounded-full animate-pulse`} style={{ height: `${20 + Math.random() * 80}%`, animationDuration: `${0.5 + Math.random()}s` }} />
+                           ))}
+                         </div>
+                      </div>
+                      <div className="w-20 h-20 rounded-full bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center mb-6 relative z-10 shadow-[0_0_50px_rgba(6,182,212,0.15)]">
+                        <Music size={36} className="text-cyan-400" />
+                      </div>
+                      <h3 className="text-xl font-bold text-white relative z-10">Audio Mode</h3>
+                      <p className="text-cyan-400/70 text-sm mt-2 relative z-10">Listening in sync with lower latency</p>
+                      
+                      {/* Hidden YouTube player for audio mode */}
+                      <div className="absolute w-0 h-0 opacity-0 pointer-events-none overflow-hidden">
+                        <YouTube
+                          videoId={videoId}
+                          opts={{
+                            width: '10px',
+                            height: '10px',
+                            playerVars: {
+                              autoplay: 1,
+                              controls: 0,
+                              disablekb: 1,
+                              modestbranding: 1,
+                              rel: 0,
+                            },
+                          }}
+                          onReady={onPlayerReady}
+                          onStateChange={onPlayerStateChange}
+                        />
+                      </div>
+                    </div>
+                  )}
 
                   {/* Status Bar */}
                   <div className="p-4 border-t border-white/[0.06] text-center text-sm text-gray-400 bg-white/[0.02]">

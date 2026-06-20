@@ -7,6 +7,7 @@ export interface SyncMetrics {
 
 export interface RoomState {
   videoId: string | null;
+  videoTitle?: string | null;
   status: "PLAYING" | "PAUSED";
   videoProgress: number;
   serverTimeUpdatedAt: number;

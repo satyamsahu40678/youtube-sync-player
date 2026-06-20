@@ -2,6 +2,7 @@
 
 export interface RoomState {
   videoId: string | null;
+  videoTitle?: string | null;
   status: "PLAYING" | "PAUSED";
   videoProgress: number; // in seconds
   serverTimeUpdatedAt: number; // Epoch ms
@@ -20,6 +21,7 @@ export interface ClockSyncResponse {
 
 export interface RoomStateMessage {
   videoId: string | null;
+  videoTitle?: string | null;
   status: "PLAYING" | "PAUSED";
   videoProgress: number;
   serverTimeUpdatedAt: number;

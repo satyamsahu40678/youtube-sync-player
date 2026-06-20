@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import Link from 'next/link';
-import { Share2, Play, Pause, Copy, Check, AlertCircle, ArrowLeft, Radio } from 'lucide-react';
+import { Share2, Play, Pause, Copy, Check, AlertCircle, ArrowLeft, Radio, Volume2, VolumeX } from 'lucide-react';
 import { NTPClockSync } from '@/lib/sync';
 import { extractYouTubeVideoId, isValidYouTubeUrl, extractYouTubeStartTime } from '@/lib/youtube';
 import YouTube, { YouTubeEvent, YouTubePlayer } from 'react-youtube';
@@ -12,6 +12,7 @@ const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000'
 
 interface RoomState {
   videoId: string | null;
+  videoTitle?: string | null;
   status: 'PLAYING' | 'PAUSED';
   videoProgress: number;
   serverTimeUpdatedAt: number;
@@ -22,20 +23,43 @@ export default function HostPage() {
   const [roomId, setRoomId] = useState('');
   const [videoUrl, setVideoUrl] = useState('');
   const [videoId, setVideoId] = useState('');
+  const [videoTitle, setVideoTitle] = useState<string | null>(null);
   const [startTime, setStartTime] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const [participantCount, setParticipantCount] = useState(1);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<string | false>(false);
   const [error, setError] = useState('');
+  const [volume, setVolume] = useState(100);
+  const [isMuted, setIsMuted] = useState(false);
   
   const playerRef = useRef<YouTubePlayer | null>(null);
   const clockSync = useRef(new NTPClockSync());
   const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
+    let initialRoomId = '';
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const urlRoomId = params.get('roomId');
+      if (urlRoomId) {
+        initialRoomId = urlRoomId.replace(/[^a-zA-Z0-9-]/g, '');
+      }
+    }
+
     const userId = typeof window !== 'undefined' ? localStorage.getItem('userId') || `host-${Date.now()}` : `host-${Date.now()}`;
+    const userStr = typeof window !== 'undefined' ? localStorage.getItem('auth_user') : null;
+    let userName = '';
+    let userEmail = '';
+    if (userStr) {
+      try {
+        const user = JSON.parse(userStr);
+        userName = user.name || '';
+        userEmail = user.email || '';
+      } catch (e) {}
+    }
+
     const socketInstance = io(SERVER_URL, {
       reconnection: true,
       reconnectionDelay: 1000,
@@ -48,10 +72,21 @@ export default function HostPage() {
 
       await clockSync.current.calibrate(socketInstance);
 
-      const newRoomId = `room-${Date.now()}`;
-      setRoomId(newRoomId);
+      const finalRoomId = initialRoomId || `room-${Date.now()}`;
+      setRoomId(finalRoomId);
 
-      socketInstance.emit('room:join', { roomId: newRoomId, userId });
+      socketInstance.emit('room:join', { 
+        roomId: finalRoomId, 
+        userId,
+        userName,
+        userEmail
+      });
+    });
+
+    socketInstance.on('room:state', (state: RoomState) => {
+      if (state.videoTitle) {
+        setVideoTitle(state.videoTitle);
+      }
     });
 
     socketInstance.on('room:participant-count', (data: { count: number }) => {
@@ -164,8 +199,22 @@ export default function HostPage() {
     }
   };
 
+  useEffect(() => {
+    if (playerRef.current) {
+      playerRef.current.setVolume(volume);
+      if (isMuted) {
+        playerRef.current.mute();
+      } else {
+        playerRef.current.unMute();
+      }
+    }
+  }, [volume, isMuted]);
+
   const onPlayerReady = (event: YouTubeEvent) => {
     playerRef.current = event.target;
+    // Force volume to use local state to override any cross-tab YouTube cookies that might sync with the joiner
+    event.target.setVolume(volume);
+    if (isMuted) event.target.mute();
     setDuration(event.target.getDuration());
     if (startTime) {
       event.target.seekTo(startTime, true);
@@ -180,8 +229,15 @@ export default function HostPage() {
 
   const onPlayerStateChange = async (event: YouTubeEvent) => {
     const state = event.data;
-    // 1 = PLAYING, 2 = PAUSED
-    if (state === 1 && !isPlaying) {
+    // 0 = ENDED, 1 = PLAYING, 2 = PAUSED
+    if (state === 0) {
+      setIsPlaying(false);
+      event.target.pauseVideo();
+      if (socket) {
+        const t = await event.target.getCurrentTime();
+        socket.emit('room:playback-control', { roomId, status: 'PAUSED', progress: t });
+      }
+    } else if (state === 1 && !isPlaying) {
       setIsPlaying(true);
       if (socket) {
         const t = await event.target.getCurrentTime();
@@ -196,10 +252,13 @@ export default function HostPage() {
     }
   };
 
-  const copyShareUrl = () => {
-    const shareUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/join?roomId=${roomId}`;
+  const copyShareUrl = (mode?: 'audio') => {
+    let shareUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/join?roomId=${roomId}`;
+    if (mode === 'audio') {
+      shareUrl += '&mode=audio';
+    }
     navigator.clipboard.writeText(shareUrl);
-    setCopied(true);
+    setCopied(mode === 'audio' ? 'audio' : 'video');
     setTimeout(() => setCopied(false), 2000);
   };
 
@@ -225,11 +284,11 @@ export default function HostPage() {
               </h1>
             </Link>
             {roomId && (
-              <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-2 flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <div>
+              <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-2 flex items-center gap-2 max-w-sm w-full sm:w-auto">
+                <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                <div className="min-w-0">
                   <p className="text-[10px] text-gray-500 uppercase tracking-wider">Room</p>
-                  <p className="text-sm font-mono font-bold text-emerald-400">{roomId.slice(0, 16)}...</p>
+                  <p className="text-sm font-mono font-bold text-emerald-400 truncate">{videoTitle || `${roomId.slice(0, 16)}...`}</p>
                 </div>
               </div>
             )}
@@ -353,22 +412,40 @@ export default function HostPage() {
                   <div className="bg-white/[0.03] border border-white/[0.04] rounded-xl p-3 text-xs font-mono break-all text-cyan-400 mb-3">
                     {typeof window !== 'undefined' ? `${window.location.origin}/join?roomId=${roomId}` : 'Loading...'}
                   </div>
-                  <button
-                    onClick={copyShareUrl}
-                    className="w-full py-3 bg-gradient-to-r from-emerald-600 to-green-600 hover:shadow-lg hover:shadow-emerald-500/25 hover:-translate-y-0.5 rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2 text-sm"
-                  >
-                    {copied ? (
-                      <>
-                        <Check size={14} />
-                        Copied!
-                      </>
-                    ) : (
-                      <>
-                        <Copy size={14} />
-                        Copy Share Link
-                      </>
-                    )}
-                  </button>
+                  <div className="space-y-2 flex flex-col sm:flex-row gap-2 sm:space-y-0">
+                    <button
+                      onClick={() => copyShareUrl()}
+                      className="flex-1 py-2.5 bg-gradient-to-r from-emerald-600 to-green-600 hover:shadow-lg hover:shadow-emerald-500/25 hover:-translate-y-0.5 rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2 text-sm"
+                    >
+                      {copied === 'video' ? (
+                        <>
+                          <Check size={14} />
+                          Copied!
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={14} />
+                          Video Link
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => copyShareUrl('audio')}
+                      className="flex-1 py-2.5 bg-white/[0.05] border border-white/[0.1] hover:bg-white/[0.08] hover:border-white/[0.15] text-white rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2 text-sm"
+                    >
+                      {copied === 'audio' ? (
+                        <>
+                          <Check size={14} />
+                          Copied!
+                        </>
+                      ) : (
+                        <>
+                          <Radio size={14} />
+                          Audio Link
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 {/* Stats */}
@@ -381,7 +458,7 @@ export default function HostPage() {
                     </div>
                     <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
                       <p className="text-gray-500 text-xs mb-1">Status</p>
-                      <p className={`text-base font-bold flex items-center gap-2 ${isPlaying ? 'text-blue-400' : 'text-amber-400'}`}>
+                      <div className={`text-base font-bold flex items-center gap-2 ${isPlaying ? 'text-blue-400' : 'text-amber-400'}`}>
                         {isPlaying ? (
                           <>
                             <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
@@ -393,8 +470,46 @@ export default function HostPage() {
                             Paused
                           </>
                         )}
-                      </p>
+                      </div>
                     </div>
+                  </div>
+                </div>
+
+                {/* Audio Control */}
+                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
+                  <h3 className="text-base font-bold mb-4 text-cyan-400 flex items-center gap-2">
+                    <Volume2 size={16} />
+                    Audio Control
+                  </h3>
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-3">
+                      {isMuted ? (
+                        <VolumeX size={20} className="text-red-400 shrink-0" />
+                      ) : (
+                        <Volume2 size={20} className="text-cyan-400 shrink-0" />
+                      )}
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={isMuted ? 0 : volume}
+                        onChange={(e) => setVolume(parseFloat(e.target.value))}
+                        className="flex-1 h-1.5 rounded-lg appearance-none cursor-pointer"
+                        style={{
+                          background: `linear-gradient(to right, rgb(6, 182, 212) 0%, rgb(6, 182, 212) ${volume}%, rgba(255,255,255,0.06) ${volume}%, rgba(255,255,255,0.06) 100%)`,
+                        }}
+                      />
+                    </div>
+                    <button
+                      onClick={() => setIsMuted(!isMuted)}
+                      className={`w-full py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${
+                        isMuted
+                          ? 'bg-white/[0.05] border border-white/[0.08] hover:bg-white/[0.08] text-gray-300'
+                          : 'bg-cyan-600/20 border border-cyan-500/30 hover:bg-cyan-600/30 text-cyan-300'
+                      }`}
+                    >
+                      {isMuted ? 'Unmute' : 'Mute'}
+                    </button>
                   </div>
                 </div>
 
