@@ -13,6 +13,10 @@ Watch YouTube videos together with perfect synchronization. Host a stream, share
 
 ## 🚀 Quick Start
 
+### Prerequisites
+- Node.js 20+
+- Docker & Docker Compose (for Redis)
+
 ### One Command Setup
 
 ```bash

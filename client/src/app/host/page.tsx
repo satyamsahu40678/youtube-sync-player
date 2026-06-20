@@ -1,71 +1,115 @@
-'use client';
+"use client";
 
-import { useEffect, useRef, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
-import Link from 'next/link';
-import { Share2, Play, Pause, Copy, Check, AlertCircle, ArrowLeft, Radio, Volume2, VolumeX } from 'lucide-react';
-import { NTPClockSync } from '@/lib/sync';
-import { extractYouTubeVideoId, isValidYouTubeUrl, extractYouTubeStartTime } from '@/lib/youtube';
-import YouTube, { YouTubeEvent, YouTubePlayer } from 'react-youtube';
+import { useEffect, useRef, useState } from "react";
+import { io, Socket } from "socket.io-client";
+import Link from "next/link";
+import {
+  Share2,
+  Play,
+  Pause,
+  Copy,
+  Check,
+  AlertCircle,
+  ArrowLeft,
+  Radio,
+  Volume2,
+  VolumeX,
+  Upload,
+} from "lucide-react";
+import { NTPClockSync } from "@/lib/sync";
+import {
+  extractYouTubeVideoId,
+  isValidYouTubeUrl,
+  extractYouTubeStartTime,
+} from "@/lib/youtube";
+import YouTube, { YouTubeEvent, YouTubePlayer } from "react-youtube";
 
-const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
+import VideoPlayer from "@/components/VideoPlayer";
+import AudioPlayer from "@/components/AudioPlayer";
+import UploadProgress from "@/components/UploadProgress";
+import { useUpload } from "@/hooks/useUpload";
+
+const SERVER_URL =
+  process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
 
 interface RoomState {
   videoId: string | null;
   videoTitle?: string | null;
-  status: 'PLAYING' | 'PAUSED';
+  status: "PLAYING" | "PAUSED";
   videoProgress: number;
   serverTimeUpdatedAt: number;
+
+  hlsStatus: "waiting" | "uploading" | "transcoding" | "ready" | "error";
+  fileType: "video" | "audio" | null;
+  hlsUrl: string | null;
+  fileName: string | null;
 }
 
 export default function HostPage() {
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [roomId, setRoomId] = useState('');
-  const [videoUrl, setVideoUrl] = useState('');
-  const [videoId, setVideoId] = useState('');
+  const [roomId, setRoomId] = useState("");
+
+  // YouTube State
+  const [videoUrl, setVideoUrl] = useState("");
+  const [videoId, setVideoId] = useState("");
   const [videoTitle, setVideoTitle] = useState<string | null>(null);
   const [startTime, setStartTime] = useState<number | null>(null);
+
+  // Common State
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const [participantCount, setParticipantCount] = useState(1);
   const [copied, setCopied] = useState<string | false>(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
   const [volume, setVolume] = useState(100);
   const [isMuted, setIsMuted] = useState(false);
-  
+
+  // HLS/Upload State
+  const [mode, setMode] = useState<"youtube" | "file">("youtube");
+  const [roomState, setRoomState] = useState<RoomState | null>(null);
+  const {
+    uploadFile,
+    progress: uploadProgressPercent,
+    isUploading,
+    error: uploadError,
+  } = useUpload();
+  const [transcodeProgress, setTranscodeProgress] = useState<
+    Record<string, number>
+  >({});
+
   const playerRef = useRef<YouTubePlayer | null>(null);
   const clockSync = useRef(new NTPClockSync());
   const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    let initialRoomId = '';
-    if (typeof window !== 'undefined') {
+    let initialRoomId = "";
+    if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
-      const urlRoomId = params.get('roomId');
+      const urlRoomId = params.get("roomId");
       if (urlRoomId) {
-        initialRoomId = urlRoomId.replace(/[^a-zA-Z0-9-]/g, '');
+        initialRoomId = urlRoomId.replace(/[^a-zA-Z0-9-]/g, "");
       }
     }
 
     let userId = `host-${Date.now()}`;
-    let userName = '';
-    let userEmail = '';
-    if (typeof window !== 'undefined') {
-      const userStr = localStorage.getItem('auth_user');
+    let userName = "";
+    let userEmail = "";
+    if (typeof window !== "undefined") {
+      const userStr = localStorage.getItem("auth_user");
       if (userStr) {
         try {
           const user = JSON.parse(userStr);
           userId = user.id;
-          userName = user.name || '';
-          userEmail = user.email || '';
+          userName = user.name || "";
+          userEmail = user.email || "";
         } catch (e) {}
       } else {
-        const storedGuestId = localStorage.getItem('guest_id');
+        const storedGuestId = localStorage.getItem("guest_id");
         if (storedGuestId) {
           userId = storedGuestId;
         } else {
-          localStorage.setItem('guest_id', userId);
+          localStorage.setItem("guest_id", userId);
         }
       }
     }
@@ -77,34 +121,60 @@ export default function HostPage() {
       reconnectionAttempts: 10,
     });
 
-    socketInstance.on('connect', async () => {
-      console.log('✅ Connected to server');
+    socketInstance.on("connect", async () => {
+      console.log("✅ Connected to server");
 
       await clockSync.current.calibrate(socketInstance);
+      clockSync.current.startPeriodicSync(socketInstance); // Auto re-sync
 
       const finalRoomId = initialRoomId || `room-${Date.now()}`;
       setRoomId(finalRoomId);
 
-      socketInstance.emit('room:join', { 
-        roomId: finalRoomId, 
+      socketInstance.emit("room:join", {
+        roomId: finalRoomId,
         userId,
         userName,
-        userEmail
+        userEmail,
       });
     });
 
-    socketInstance.on('room:state', (state: RoomState) => {
+    socketInstance.on("room:state", (state: RoomState) => {
+      setRoomState(state);
       if (state.videoTitle) {
         setVideoTitle(state.videoTitle);
       }
+      if (state.hlsStatus === "ready" && state.hlsUrl) {
+        setMode("file");
+      } else if (state.videoId) {
+        setMode("youtube");
+      }
     });
 
-    socketInstance.on('room:participant-count', (data: { count: number }) => {
+    socketInstance.on("room:participant-count", (data: { count: number }) => {
       setParticipantCount(data.count);
     });
 
-    socketInstance.on('disconnect', () => {
-      console.log('❌ Disconnected from server');
+    // File upload events
+    socketInstance.on(
+      "transcode:progress",
+      (data: { quality: string; percent: number }) => {
+        setTranscodeProgress((prev) => ({
+          ...prev,
+          [data.quality]: data.percent,
+        }));
+      },
+    );
+
+    socketInstance.on(
+      "stream:ready",
+      (data: { hlsUrl: string; fileType: "video" | "audio" }) => {
+        // Room state will also update shortly, but we can set mode immediately
+        setMode("file");
+      },
+    );
+
+    socketInstance.on("disconnect", () => {
+      console.log("❌ Disconnected from server");
     });
 
     setSocket(socketInstance);
@@ -114,19 +184,22 @@ export default function HostPage() {
     };
   }, []);
 
-  // Periodic host progress sync
+  // Periodic host progress sync - 1 SECOND HEARTBEAT (Zero-latency fix)
   useEffect(() => {
-    if (isPlaying && socket && playerRef.current) {
+    if (isPlaying && socket) {
       syncIntervalRef.current = setInterval(async () => {
         try {
-          const currentProgress = await playerRef.current.getCurrentTime();
-          setProgress(currentProgress);
-          // Send periodic correction
-          socket.emit('room:seek', { roomId, progress: currentProgress });
+          let currentProgress = progress;
+          if (mode === "youtube" && playerRef.current) {
+            currentProgress = await playerRef.current.getCurrentTime();
+            setProgress(currentProgress);
+          }
+          // Zero-latency volatile heartbeat
+          socket.emit("sync:heartbeat", { roomId, progress: currentProgress });
         } catch (e) {
           // Ignore errors
         }
-      }, 5000);
+      }, 1000); // 1 second
     } else if (syncIntervalRef.current) {
       clearInterval(syncIntervalRef.current);
     }
@@ -134,12 +207,12 @@ export default function HostPage() {
     return () => {
       if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
     };
-  }, [isPlaying, socket, roomId]);
+  }, [isPlaying, socket, roomId, mode, progress]);
 
-  // UI Progress bar updater
+  // UI Progress bar updater for YouTube
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isPlaying && playerRef.current) {
+    if (isPlaying && playerRef.current && mode === "youtube") {
       interval = setInterval(async () => {
         try {
           const t = await playerRef.current.getCurrentTime();
@@ -148,18 +221,20 @@ export default function HostPage() {
       }, 500);
     }
     return () => clearInterval(interval);
-  }, [isPlaying]);
+  }, [isPlaying, mode]);
 
   const handlePlayVideo = () => {
-    setError('');
+    setError("");
 
     if (!videoUrl.trim()) {
-      setError('Please enter a YouTube URL');
+      setError("Please enter a YouTube URL");
       return;
     }
 
     if (!isValidYouTubeUrl(videoUrl)) {
-      setError('Invalid YouTube URL format. Supported: youtube.com/watch?v=..., youtu.be/..., or youtu.be/...?si=...');
+      setError(
+        "Invalid YouTube URL format. Supported: youtube.com/watch?v=..., youtu.be/..., or youtu.be/...?si=...",
+      );
       return;
     }
 
@@ -167,33 +242,64 @@ export default function HostPage() {
     const startTimeValue = extractYouTubeStartTime(videoUrl);
 
     if (!extractedId) {
-      setError('Could not extract video ID from URL');
+      setError("Could not extract video ID from URL");
       return;
     }
 
+    setMode("youtube");
     setVideoId(extractedId);
     setStartTime(startTimeValue);
     setProgress(startTimeValue || 0);
 
     if (socket) {
-      socket.emit('room:update-video', { roomId, videoId: extractedId, startTime: startTimeValue || 0 });
+      socket.emit("room:update-video", {
+        roomId,
+        videoId: extractedId,
+        startTime: startTimeValue || 0,
+      });
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const file = e.target.files[0];
+
+    setMode("file");
+    setTranscodeProgress({});
+    const result = await uploadFile(file, roomId);
+    if (!result.success) {
+      setError(uploadError || "Upload failed");
     }
   };
 
   const togglePlayPause = async () => {
-    if (!playerRef.current) return;
-    
-    const currentProgress = await playerRef.current.getCurrentTime();
+    if (mode === "youtube" && !playerRef.current) return;
+
+    let currentProgress = progress;
+    if (mode === "youtube" && playerRef.current) {
+      currentProgress = await playerRef.current.getCurrentTime();
+    }
+
     if (isPlaying) {
-      playerRef.current.pauseVideo();
+      if (mode === "youtube" && playerRef.current)
+        playerRef.current.pauseVideo();
       if (socket) {
-        socket.emit('room:playback-control', { roomId, status: 'PAUSED', progress: currentProgress });
+        socket.emit("room:playback-control", {
+          roomId,
+          status: "PAUSED",
+          progress: currentProgress,
+        });
       }
       setIsPlaying(false);
     } else {
-      playerRef.current.playVideo();
+      if (mode === "youtube" && playerRef.current)
+        playerRef.current.playVideo();
       if (socket) {
-        socket.emit('room:playback-control', { roomId, status: 'PLAYING', progress: currentProgress });
+        socket.emit("room:playback-control", {
+          roomId,
+          status: "PLAYING",
+          progress: currentProgress,
+        });
       }
       setIsPlaying(true);
     }
@@ -201,16 +307,16 @@ export default function HostPage() {
 
   const handleSeek = async (newProgress: number) => {
     setProgress(newProgress);
-    if (playerRef.current) {
+    if (mode === "youtube" && playerRef.current) {
       playerRef.current.seekTo(newProgress, true);
     }
     if (socket) {
-      socket.emit('room:seek', { roomId, progress: newProgress });
+      socket.emit("room:seek", { roomId, progress: newProgress });
     }
   };
 
   useEffect(() => {
-    if (playerRef.current) {
+    if (mode === "youtube" && playerRef.current) {
       playerRef.current.setVolume(volume);
       if (isMuted) {
         playerRef.current.mute();
@@ -218,7 +324,7 @@ export default function HostPage() {
         playerRef.current.unMute();
       }
     }
-  }, [volume, isMuted]);
+  }, [volume, isMuted, mode]);
 
   const onPlayerReady = (event: YouTubeEvent) => {
     playerRef.current = event.target;
@@ -231,9 +337,13 @@ export default function HostPage() {
     }
     event.target.playVideo();
     setIsPlaying(true);
-    
+
     if (socket) {
-      socket.emit('room:playback-control', { roomId, status: 'PLAYING', progress: startTime || 0 });
+      socket.emit("room:playback-control", {
+        roomId,
+        status: "PLAYING",
+        progress: startTime || 0,
+      });
     }
   };
 
@@ -245,30 +355,42 @@ export default function HostPage() {
       event.target.pauseVideo();
       if (socket) {
         const t = await event.target.getCurrentTime();
-        socket.emit('room:playback-control', { roomId, status: 'PAUSED', progress: t });
+        socket.emit("room:playback-control", {
+          roomId,
+          status: "PAUSED",
+          progress: t,
+        });
       }
     } else if (state === 1 && !isPlaying) {
       setIsPlaying(true);
       if (socket) {
         const t = await event.target.getCurrentTime();
-        socket.emit('room:playback-control', { roomId, status: 'PLAYING', progress: t });
+        socket.emit("room:playback-control", {
+          roomId,
+          status: "PLAYING",
+          progress: t,
+        });
       }
     } else if (state === 2 && isPlaying) {
       setIsPlaying(false);
       if (socket) {
         const t = await event.target.getCurrentTime();
-        socket.emit('room:playback-control', { roomId, status: 'PAUSED', progress: t });
+        socket.emit("room:playback-control", {
+          roomId,
+          status: "PAUSED",
+          progress: t,
+        });
       }
     }
   };
 
-  const copyShareUrl = (mode?: 'audio') => {
-    let shareUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/join?roomId=${roomId}`;
-    if (mode === 'audio') {
-      shareUrl += '&mode=audio';
+  const copyShareUrl = (shareMode?: "audio") => {
+    let shareUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/join?roomId=${roomId}`;
+    if (shareMode === "audio") {
+      shareUrl += "&mode=audio";
     }
     navigator.clipboard.writeText(shareUrl);
-    setCopied(mode === 'audio' ? 'audio' : 'video');
+    setCopied(shareMode === "audio" ? "audio" : "video");
     setTimeout(() => setCopied(false), 2000);
   };
 
@@ -280,7 +402,10 @@ export default function HostPage() {
       {/* Animated background */}
       <div className="fixed inset-0 pointer-events-none">
         <div className="absolute -top-48 -right-48 w-[500px] h-[500px] bg-emerald-600/12 rounded-full blur-[120px] animate-pulse" />
-        <div className="absolute -bottom-48 -left-48 w-[500px] h-[500px] bg-green-600/12 rounded-full blur-[120px] animate-pulse" style={{ animationDelay: '1.5s' }} />
+        <div
+          className="absolute -bottom-48 -left-48 w-[500px] h-[500px] bg-green-600/12 rounded-full blur-[120px] animate-pulse"
+          style={{ animationDelay: "1.5s" }}
+        />
       </div>
 
       <div className="relative z-10 p-4 sm:p-6">
@@ -288,7 +413,10 @@ export default function HostPage() {
           {/* Header */}
           <div className="flex justify-between items-center mb-8 flex-wrap gap-4">
             <Link href="/" className="group flex items-center gap-3">
-              <ArrowLeft size={18} className="text-gray-500 group-hover:text-emerald-400 transition-colors" />
+              <ArrowLeft
+                size={18}
+                className="text-gray-500 group-hover:text-emerald-400 transition-colors"
+              />
               <h1 className="text-2xl sm:text-3xl font-extrabold bg-gradient-to-r from-emerald-400 to-green-400 bg-clip-text text-transparent">
                 Host Stream
               </h1>
@@ -297,8 +425,12 @@ export default function HostPage() {
               <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-2 flex items-center gap-2 max-w-sm w-full sm:w-auto">
                 <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
                 <div className="min-w-0">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider">Room</p>
-                  <p className="text-sm font-mono font-bold text-emerald-400 truncate">{videoTitle || `${roomId.slice(0, 16)}...`}</p>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider">
+                    Room
+                  </p>
+                  <p className="text-sm font-mono font-bold text-emerald-400 truncate">
+                    {videoTitle || `${roomId.slice(0, 16)}...`}
+                  </p>
                 </div>
               </div>
             )}
@@ -306,49 +438,96 @@ export default function HostPage() {
 
           {roomId ? (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Main Video Player */}
+              {/* Main Player Area */}
               <div className="lg:col-span-2">
                 <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl">
-                  {videoId ? (
-                    <div className="aspect-video bg-black relative">
-                      <YouTube
-                        videoId={videoId}
-                        opts={{
-                          width: '100%',
-                          height: '100%',
-                          playerVars: {
-                            autoplay: 1,
-                            controls: 0, // hide native controls to prevent host confusion, we use custom
-                            disablekb: 1,
-                            modestbranding: 1,
-                            rel: 0,
-                          },
-                        }}
-                        onReady={onPlayerReady}
-                        onStateChange={onPlayerStateChange}
-                        className="absolute inset-0 w-full h-full"
-                      />
-                    </div>
-                  ) : (
-                    <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center">
-                      <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-4">
-                        <Play size={28} className="text-gray-600" />
+                  {mode === "youtube" ? (
+                    videoId ? (
+                      <div className="aspect-video bg-black relative">
+                        <YouTube
+                          videoId={videoId}
+                          opts={{
+                            width: "100%",
+                            height: "100%",
+                            playerVars: {
+                              autoplay: 1,
+                              controls: 0,
+                              disablekb: 1,
+                              modestbranding: 1,
+                              rel: 0,
+                            },
+                          }}
+                          onReady={onPlayerReady}
+                          onStateChange={onPlayerStateChange}
+                          className="absolute inset-0 w-full h-full"
+                        />
                       </div>
-                      <p className="text-gray-500 text-sm">Enter a YouTube URL below to start streaming</p>
+                    ) : (
+                      <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center">
+                        <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-4">
+                          <Play size={28} className="text-gray-600" />
+                        </div>
+                        <p className="text-gray-500 text-sm">
+                          Enter a YouTube URL below to start streaming
+                        </p>
+                      </div>
+                    )
+                  ) : (
+                    // File Mode
+                    <div className="p-4">
+                      {isUploading ||
+                      roomState?.hlsStatus === "transcoding" ||
+                      roomState?.hlsStatus === "uploading" ? (
+                        <UploadProgress
+                          uploadProgress={uploadProgressPercent}
+                          isUploading={isUploading}
+                          isTranscoding={roomState?.hlsStatus === "transcoding"}
+                          transcodeProgress={transcodeProgress}
+                          fileName={roomState?.fileName || undefined}
+                        />
+                      ) : roomState?.hlsStatus === "ready" &&
+                        roomState?.hlsUrl ? (
+                        roomState.fileType === "audio" ? (
+                          <AudioPlayer
+                            hlsUrl={roomState.hlsUrl}
+                            socket={socket}
+                            isHost={true}
+                            serverNow={() => clockSync.current.getServerTime()}
+                          />
+                        ) : (
+                          <VideoPlayer
+                            hlsUrl={roomState.hlsUrl}
+                            socket={socket}
+                            isHost={true}
+                            serverNow={() => clockSync.current.getServerTime()}
+                          />
+                        )
+                      ) : (
+                        <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center">
+                          <Upload size={32} className="text-gray-500 mb-4" />
+                          <p className="text-gray-500 text-sm">
+                            Upload a file to start streaming
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
 
                   {/* Controls */}
                   <div className="p-6 border-t border-white/[0.06] space-y-4 bg-white/[0.02]">
                     <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-2">YouTube URL</label>
-                      <div className="flex gap-2 flex-wrap">
+                      <label className="block text-sm font-medium text-gray-300 mb-2">
+                        1. YouTube URL
+                      </label>
+                      <div className="flex gap-2 flex-wrap mb-4">
                         <input
                           type="text"
-                          placeholder="Paste YouTube link (e.g., youtu.be/-PXivr2hmMA?si=... or youtube.com/watch?v=...)"
+                          placeholder="Paste YouTube link (e.g., youtu.be/...) "
                           value={videoUrl}
                           onChange={(e) => setVideoUrl(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && handlePlayVideo()}
+                          onKeyDown={(e) =>
+                            e.key === "Enter" && handlePlayVideo()
+                          }
                           className="flex-1 min-w-64 px-4 py-3 bg-white/[0.03] border border-white/[0.08] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500/50 focus:ring-2 focus:ring-emerald-500/10 transition-all duration-200"
                         />
                         <button
@@ -359,9 +538,30 @@ export default function HostPage() {
                           Play
                         </button>
                       </div>
-                      <p className="text-xs text-gray-500 mt-2">
-                        ✨ Supports: youtube.com/watch?v=ID, youtu.be/ID, youtu.be/-PXivr2hmMA?si=xxxxx, timestamps (?t=60s)
-                      </p>
+
+                      <div className="flex items-center gap-4">
+                        <hr className="flex-1 border-white/10" />
+                        <span className="text-xs text-gray-500 uppercase tracking-wider font-bold">
+                          OR
+                        </span>
+                        <hr className="flex-1 border-white/10" />
+                      </div>
+
+                      <label className="block text-sm font-medium text-gray-300 mt-4 mb-2">
+                        2. Upload Local File
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="file"
+                          accept="video/*,audio/*"
+                          onChange={handleFileUpload}
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        />
+                        <div className="flex-1 min-w-64 px-4 py-3 bg-white/[0.03] border border-white/[0.08] border-dashed rounded-xl text-center text-gray-400 hover:text-emerald-400 hover:border-emerald-500/50 transition-all duration-200 flex items-center justify-center gap-2">
+                          <Upload size={16} />
+                          Choose Video or Audio File (Max 100MB)
+                        </div>
+                      </div>
                     </div>
 
                     {error && (
@@ -371,40 +571,53 @@ export default function HostPage() {
                       </div>
                     )}
 
-                    {videoId && (
-                      <div className="flex gap-4 flex-wrap">
-                        <button
-                          onClick={togglePlayPause}
-                          className="flex-1 min-w-32 flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 border border-violet-500/30 text-violet-300 hover:from-violet-600/30 hover:to-fuchsia-600/30 rounded-xl font-semibold transition-all duration-200"
-                        >
-                          {isPlaying ? (
-                            <>
-                              <Pause size={18} />
-                              Pause
-                            </>
-                          ) : (
-                            <>
-                              <Play size={18} />
-                              Play
-                            </>
-                          )}
-                        </button>
+                    {(videoId || roomState?.hlsUrl) && (
+                      <div className="flex gap-4 flex-wrap mt-4">
+                        {mode === "youtube" && (
+                          <button
+                            onClick={togglePlayPause}
+                            className="flex-1 min-w-32 flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 border border-violet-500/30 text-violet-300 hover:from-violet-600/30 hover:to-fuchsia-600/30 rounded-xl font-semibold transition-all duration-200"
+                          >
+                            {isPlaying ? (
+                              <>
+                                <Pause size={18} />
+                                Pause
+                              </>
+                            ) : (
+                              <>
+                                <Play size={18} />
+                                Play
+                              </>
+                            )}
+                          </button>
+                        )}
 
-                        <div className="flex-1 min-w-32 flex items-center gap-3">
-                          <span className="text-xs text-gray-500 min-w-fit">Seek:</span>
-                          <input
-                            type="range"
-                            min="0"
-                            max={duration || 100}
-                            value={progress}
-                            onChange={(e) => handleSeek(parseFloat(e.target.value))}
-                            className="flex-1 h-1.5 rounded-lg appearance-none cursor-pointer"
-                            style={{
-                              background: `linear-gradient(to right, rgb(16, 185, 129) 0%, rgb(16, 185, 129) ${progressPercent}%, rgba(255,255,255,0.06) ${progressPercent}%, rgba(255,255,255,0.06) 100%)`,
-                            }}
-                          />
-                          <span className="text-xs text-gray-500 min-w-fit font-mono">{Math.floor(progress / 60)}:{(Math.floor(progress % 60)).toString().padStart(2, '0')}</span>
-                        </div>
+                        {mode === "youtube" && (
+                          <div className="flex-1 min-w-32 flex items-center gap-3">
+                            <span className="text-xs text-gray-500 min-w-fit">
+                              Seek:
+                            </span>
+                            <input
+                              type="range"
+                              min="0"
+                              max={duration || 100}
+                              value={progress}
+                              onChange={(e) =>
+                                handleSeek(parseFloat(e.target.value))
+                              }
+                              className="flex-1 h-1.5 rounded-lg appearance-none cursor-pointer"
+                              style={{
+                                background: `linear-gradient(to right, rgb(16, 185, 129) 0%, rgb(16, 185, 129) ${progressPercent}%, rgba(255,255,255,0.06) ${progressPercent}%, rgba(255,255,255,0.06) 100%)`,
+                              }}
+                            />
+                            <span className="text-xs text-gray-500 min-w-fit font-mono">
+                              {Math.floor(progress / 60)}:
+                              {Math.floor(progress % 60)
+                                .toString()
+                                .padStart(2, "0")}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -420,14 +633,16 @@ export default function HostPage() {
                     Share Stream
                   </h3>
                   <div className="bg-white/[0.03] border border-white/[0.04] rounded-xl p-3 text-xs font-mono break-all text-cyan-400 mb-3">
-                    {typeof window !== 'undefined' ? `${window.location.origin}/join?roomId=${roomId}` : 'Loading...'}
+                    {typeof window !== "undefined"
+                      ? `${window.location.origin}/join?roomId=${roomId}`
+                      : "Loading..."}
                   </div>
                   <div className="space-y-2 flex flex-col sm:flex-row gap-2 sm:space-y-0">
                     <button
                       onClick={() => copyShareUrl()}
                       className="flex-1 py-2.5 bg-gradient-to-r from-emerald-600 to-green-600 hover:shadow-lg hover:shadow-emerald-500/25 hover:-translate-y-0.5 rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2 text-sm"
                     >
-                      {copied === 'video' ? (
+                      {copied === "video" ? (
                         <>
                           <Check size={14} />
                           Copied!
@@ -440,10 +655,10 @@ export default function HostPage() {
                       )}
                     </button>
                     <button
-                      onClick={() => copyShareUrl('audio')}
+                      onClick={() => copyShareUrl("audio")}
                       className="flex-1 py-2.5 bg-white/[0.05] border border-white/[0.1] hover:bg-white/[0.08] hover:border-white/[0.15] text-white rounded-xl font-semibold transition-all duration-200 flex items-center justify-center gap-2 text-sm"
                     >
-                      {copied === 'audio' ? (
+                      {copied === "audio" ? (
                         <>
                           <Check size={14} />
                           Copied!
@@ -460,16 +675,24 @@ export default function HostPage() {
 
                 {/* Stats */}
                 <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
-                  <h3 className="text-base font-bold mb-4 text-blue-400">📊 Live Stats</h3>
+                  <h3 className="text-base font-bold mb-4 text-blue-400">
+                    📊 Live Stats
+                  </h3>
                   <div className="space-y-3">
                     <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
-                      <p className="text-gray-500 text-xs mb-1">Connected Viewers</p>
-                      <p className="text-3xl font-extrabold text-emerald-400">{participantCount}</p>
+                      <p className="text-gray-500 text-xs mb-1">
+                        Connected Viewers
+                      </p>
+                      <p className="text-3xl font-extrabold text-emerald-400">
+                        {participantCount}
+                      </p>
                     </div>
                     <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
                       <p className="text-gray-500 text-xs mb-1">Status</p>
-                      <div className={`text-base font-bold flex items-center gap-2 ${isPlaying ? 'text-blue-400' : 'text-amber-400'}`}>
-                        {isPlaying ? (
+                      <div
+                        className={`text-base font-bold flex items-center gap-2 ${isPlaying || roomState?.hlsStatus === "ready" ? "text-blue-400" : "text-amber-400"}`}
+                      >
+                        {isPlaying || roomState?.hlsStatus === "ready" ? (
                           <>
                             <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
                             Playing
@@ -477,7 +700,7 @@ export default function HostPage() {
                         ) : (
                           <>
                             <div className="w-2 h-2 rounded-full bg-amber-400" />
-                            Paused
+                            Paused / Waiting
                           </>
                         )}
                       </div>
@@ -485,43 +708,53 @@ export default function HostPage() {
                   </div>
                 </div>
 
-                {/* Audio Control */}
-                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
-                  <h3 className="text-base font-bold mb-4 text-cyan-400 flex items-center gap-2">
-                    <Volume2 size={16} />
-                    Audio Control
-                  </h3>
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-3">
-                      {isMuted ? (
-                        <VolumeX size={20} className="text-red-400 shrink-0" />
-                      ) : (
-                        <Volume2 size={20} className="text-cyan-400 shrink-0" />
-                      )}
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        value={isMuted ? 0 : volume}
-                        onChange={(e) => setVolume(parseFloat(e.target.value))}
-                        className="flex-1 h-1.5 rounded-lg appearance-none cursor-pointer"
-                        style={{
-                          background: `linear-gradient(to right, rgb(6, 182, 212) 0%, rgb(6, 182, 212) ${volume}%, rgba(255,255,255,0.06) ${volume}%, rgba(255,255,255,0.06) 100%)`,
-                        }}
-                      />
+                {/* Audio Control (YouTube Mode Only) */}
+                {mode === "youtube" && (
+                  <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
+                    <h3 className="text-base font-bold mb-4 text-cyan-400 flex items-center gap-2">
+                      <Volume2 size={16} />
+                      Audio Control
+                    </h3>
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-3">
+                        {isMuted ? (
+                          <VolumeX
+                            size={20}
+                            className="text-red-400 shrink-0"
+                          />
+                        ) : (
+                          <Volume2
+                            size={20}
+                            className="text-cyan-400 shrink-0"
+                          />
+                        )}
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={isMuted ? 0 : volume}
+                          onChange={(e) =>
+                            setVolume(parseFloat(e.target.value))
+                          }
+                          className="flex-1 h-1.5 rounded-lg appearance-none cursor-pointer"
+                          style={{
+                            background: `linear-gradient(to right, rgb(6, 182, 212) 0%, rgb(6, 182, 212) ${volume}%, rgba(255,255,255,0.06) ${volume}%, rgba(255,255,255,0.06) 100%)`,
+                          }}
+                        />
+                      </div>
+                      <button
+                        onClick={() => setIsMuted(!isMuted)}
+                        className={`w-full py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${
+                          isMuted
+                            ? "bg-white/[0.05] border border-white/[0.08] hover:bg-white/[0.08] text-gray-300"
+                            : "bg-cyan-600/20 border border-cyan-500/30 hover:bg-cyan-600/30 text-cyan-300"
+                        }`}
+                      >
+                        {isMuted ? "Unmute" : "Mute"}
+                      </button>
                     </div>
-                    <button
-                      onClick={() => setIsMuted(!isMuted)}
-                      className={`w-full py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${
-                        isMuted
-                          ? 'bg-white/[0.05] border border-white/[0.08] hover:bg-white/[0.08] text-gray-300'
-                          : 'bg-cyan-600/20 border border-cyan-500/30 hover:bg-cyan-600/30 text-cyan-300'
-                      }`}
-                    >
-                      {isMuted ? 'Unmute' : 'Mute'}
-                    </button>
                   </div>
-                </div>
+                )}
 
                 {/* Network Info */}
                 <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
@@ -531,13 +764,23 @@ export default function HostPage() {
                   </h3>
                   <div className="space-y-2">
                     {[
-                      { label: 'Server connected', active: true },
-                      { label: 'Clock synced', active: true },
-                      { label: 'Stream active', active: isPlaying },
+                      { label: "Server connected", active: true },
+                      { label: "Clock synced", active: true },
+                      {
+                        label: "Stream active",
+                        active: isPlaying || roomState?.hlsStatus === "ready",
+                      },
                     ].map((item) => (
-                      <div key={item.label} className="flex items-center gap-3 p-2.5 bg-white/[0.02] rounded-lg border border-white/[0.03]">
-                        <div className={`w-1.5 h-1.5 rounded-full ${item.active ? 'bg-emerald-400' : 'bg-gray-600'} ${item.active ? 'animate-pulse' : ''}`} />
-                        <span className="text-gray-400 text-sm">{item.label}</span>
+                      <div
+                        key={item.label}
+                        className="flex items-center gap-3 p-2.5 bg-white/[0.02] rounded-lg border border-white/[0.03]"
+                      >
+                        <div
+                          className={`w-1.5 h-1.5 rounded-full ${item.active ? "bg-emerald-400" : "bg-gray-600"} ${item.active ? "animate-pulse" : ""}`}
+                        />
+                        <span className="text-gray-400 text-sm">
+                          {item.label}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -555,4 +798,3 @@ export default function HostPage() {
     </div>
   );
 }
-

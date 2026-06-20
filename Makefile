@@ -1,7 +1,7 @@
 .PHONY: help setup check-node env-setup install-all install-client install-server \
        migrate db-push db-reset db-studio generate \
        dev dev-client dev-server build start \
-       test test-client test-server lint format \
+       test test-client test-server lint format typecheck \
        health status logs open \
        clean clean-deps clean-db clean-all \
        version info show-env check-deps update-deps \
@@ -42,8 +42,6 @@ quick-start: ## 🚀 One command to rule them all: setup + run (zero interventio
 	@$(MAKE) check-node
 	@$(MAKE) env-setup
 	@$(MAKE) install-all
-	@$(MAKE) generate
-	@$(MAKE) db-push
 	@echo ""
 	@echo "$(GREEN)✓ Setup complete! Starting servers...$(NC)"
 	@echo ""
@@ -53,7 +51,7 @@ quick-start: ## 🚀 One command to rule them all: setup + run (zero interventio
 # Setup & Installation Targets
 # ============================================================================
 
-setup: check-node env-setup install-all generate migrate db-push ## Complete setup: install deps, migrate DB, initialize everything
+setup: check-node env-setup install-all ## Complete setup: install deps, initialize everything
 	@echo "$(GREEN)✓ Setup complete!$(NC)"
 
 check-node: ## Check if Node.js and npm are installed
@@ -108,38 +106,18 @@ install-server: ## Install only server dependencies
 	@echo "$(GREEN)✓ Server dependencies installed$(NC)"
 
 # ============================================================================
-# Database Targets
+# Infrastructure Targets
 # ============================================================================
 
-generate: ## Generate Prisma client
-	@echo "$(BLUE)Generating Prisma client...$(NC)"
-	@cd server && npx prisma generate && cd ..
-	@echo "$(GREEN)✓ Prisma client generated$(NC)"
+redis-start: ## Start Redis container for file uploads and sync
+	@echo "$(BLUE)Starting Redis...$(NC)"
+	@docker compose up -d redis
+	@echo "$(GREEN)✓ Redis started$(NC)"
 
-migrate: ## Run Prisma database migrations
-	@echo "$(BLUE)Running database migrations...$(NC)"
-	@cd server && npx prisma migrate dev --name "migration" && cd ..
-	@echo "$(GREEN)✓ Migrations completed$(NC)"
-
-db-push: ## Push database schema without creating migration files (dev only)
-	@echo "$(BLUE)Pushing database schema...$(NC)"
-	@cd server && npx prisma db push && cd ..
-	@echo "$(GREEN)✓ Database schema pushed$(NC)"
-
-db-reset: ## ⚠️  DANGER: Reset database (deletes all data)
-	@echo "$(RED)⚠️  WARNING: This will delete all data!$(NC)"
-	@read -p "Are you sure? [y/N] " -n 1 -r; \
-	echo; \
-	if [[ "$$REPLY" =~ ^[Yy]$$ ]]; then \
-		cd server && npx prisma migrate reset --force && cd ..; \
-		echo "$(GREEN)✓ Database reset$(NC)"; \
-	else \
-		echo "$(YELLOW)Database reset cancelled$(NC)"; \
-	fi
-
-db-studio: ## Open Prisma Studio for database inspection
-	@echo "$(BLUE)Opening Prisma Studio...$(NC)"
-	@cd server && npx prisma studio
+redis-stop: ## Stop Redis container
+	@echo "$(BLUE)Stopping Redis...$(NC)"
+	@docker compose down
+	@echo "$(GREEN)✓ Redis stopped$(NC)"
 
 # ============================================================================
 # Development Targets
@@ -210,6 +188,14 @@ format: ## Format code with Prettier
 	@cd client && npx prettier --write "src/**/*.{ts,tsx}" || true && cd ..
 	@cd server && npx prettier --write "src/**/*.ts" || true && cd ..
 	@echo "$(GREEN)✓ Code formatted$(NC)"
+
+typecheck: check-node ## Run TypeScript type checking
+	@echo "$(BLUE)Typechecking client...$(NC)"
+	@cd client && npx tsc --noEmit && cd ..
+	@echo ""
+	@echo "$(BLUE)Typechecking server...$(NC)"
+	@cd server && npx tsc --noEmit && cd ..
+	@echo "$(GREEN)✓ Typechecking completed$(NC)"
 
 # ============================================================================
 # Utility Targets
@@ -295,12 +281,6 @@ check-deps: ## Verify all dependencies are installed
 	else \
 		echo "$(RED)✗ Server node_modules missing — run 'make install-all'$(NC)"; \
 	fi
-	@echo "$(BLUE)Checking Prisma client...$(NC)"
-	@if [ -d server/node_modules/.prisma ]; then \
-		echo "$(GREEN)✓ Prisma client generated$(NC)"; \
-	else \
-		echo "$(RED)✗ Prisma client missing — run 'make generate'$(NC)"; \
-	fi
 
 update-deps: ## Update dependencies to latest versions
 	@echo "$(BLUE)Updating client dependencies...$(NC)"
@@ -351,14 +331,15 @@ info: ## Show project information and quick reference
 # Deployment Targets
 # ============================================================================
 
-docker-build: ## Build Docker image for production
-	@echo "$(BLUE)Building Docker image...$(NC)"
-	@docker build -t youtube-sync-player:$(VERSION) .
-	@echo "$(GREEN)✓ Docker image built$(NC)"
+docker-build: ## Build Docker images using docker compose
+	@echo "$(BLUE)Building Docker images...$(NC)"
+	@docker compose build
+	@echo "$(GREEN)✓ Docker images built$(NC)"
 
-docker-run: ## Run Docker container
-	@echo "$(BLUE)Running Docker container...$(NC)"
-	@docker run -p 3000:3000 -p 4000:4000 youtube-sync-player:$(VERSION)
+docker-run: ## Run application using docker compose
+	@echo "$(BLUE)Starting application with Docker Compose...$(NC)"
+	@docker compose up -d
+	@echo "$(GREEN)✓ Application started (ports 3000, 4000)$(NC)"
 
 # ============================================================================
 # Emergency Targets

@@ -1,46 +1,72 @@
-'use client';
+"use client";
 
-import { useEffect, useRef, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
-import Link from 'next/link';
-import { Volume2, VolumeX, Zap, Copy, Check, ArrowLeft, RefreshCw, Music } from 'lucide-react';
-import { NTPClockSync } from '@/lib/sync';
-import { RoomState } from '@/lib/types';
-import YouTube, { YouTubeEvent, YouTubePlayer } from 'react-youtube';
+import { useEffect, useRef, useState } from "react";
+import { io, Socket } from "socket.io-client";
+import Link from "next/link";
+import {
+  Volume2,
+  VolumeX,
+  Zap,
+  Copy,
+  Check,
+  ArrowLeft,
+  RefreshCw,
+  Music,
+  Video as VideoIcon,
+} from "lucide-react";
+import { NTPClockSync, PlaybackRateController } from "@/lib/sync";
+import { RoomState } from "@/lib/types";
+import YouTube, { YouTubeEvent, YouTubePlayer } from "react-youtube";
 
-const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
+import VideoPlayer from "@/components/VideoPlayer";
+import AudioPlayer from "@/components/AudioPlayer";
+
+const SERVER_URL =
+  process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
 
 export default function JoinPage() {
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [roomId, setRoomId] = useState('');
-  const [urlInput, setUrlInput] = useState('');
-  const [videoId, setVideoId] = useState('');
+  const [roomId, setRoomId] = useState("");
+  const [urlInput, setUrlInput] = useState("");
+
+  // YouTube state
+  const [videoId, setVideoId] = useState("");
   const [videoTitle, setVideoTitle] = useState<string | null>(null);
+
+  // Common state
   const [isConnected, setIsConnected] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<'SYNCED' | 'ADJUSTING' | 'RESYNCING'>('RESYNCING');
+  const [syncStatus, setSyncStatus] = useState<
+    "SYNCED" | "ADJUSTING" | "RESYNCING"
+  >("RESYNCING");
   const [rtt, setRtt] = useState(0);
   const [drift, setDrift] = useState(0);
   const [volume, setVolume] = useState(100);
   const [isMuted, setIsMuted] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
   const [participantCount, setParticipantCount] = useState(1);
   const [isAudioMode, setIsAudioMode] = useState(false);
 
+  // HLS State
+  const [mode, setMode] = useState<"youtube" | "file">("youtube");
+  const [roomState, setRoomState] = useState<RoomState | null>(null);
+
   const playerRef = useRef<YouTubePlayer | null>(null);
   const clockSync = useRef(new NTPClockSync());
+  const rateController = useRef(new PlaybackRateController());
+
   const expectedPositionRef = useRef(0);
   const isPlayingRef = useRef(false);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
-      const id = params.get('roomId');
+      const id = params.get("roomId");
       if (id) {
         setRoomId(id);
       }
-      const mode = params.get('mode');
-      if (mode === 'audio') {
+      const modeParams = params.get("mode");
+      if (modeParams === "audio") {
         setIsAudioMode(true);
       }
     }
@@ -48,18 +74,23 @@ export default function JoinPage() {
 
   const handleJoinRoom = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setError("");
 
     if (!urlInput.trim()) {
-      setError('Please paste a room URL or ID');
+      setError("Please paste a room URL or ID");
       return;
     }
 
     let extractedRoomId = urlInput.trim();
 
     // Check if user accidentally pasted a YouTube URL instead of a room URL
-    if (extractedRoomId.includes('youtube.com/watch') || extractedRoomId.includes('youtu.be/')) {
-      setError('This looks like a YouTube URL. Please paste the room share URL or room ID instead. YouTube URLs are used on the Host page.');
+    if (
+      extractedRoomId.includes("youtube.com/watch") ||
+      extractedRoomId.includes("youtu.be/")
+    ) {
+      setError(
+        "This looks like a YouTube URL. Please paste the room share URL or room ID instead. YouTube URLs are used on the Host page.",
+      );
       return;
     }
 
@@ -70,15 +101,15 @@ export default function JoinPage() {
     }
 
     // Remove any non-alphanumeric characters (except hyphens for room IDs)
-    extractedRoomId = extractedRoomId.replace(/[^a-zA-Z0-9-]/g, '');
+    extractedRoomId = extractedRoomId.replace(/[^a-zA-Z0-9-]/g, "");
 
     if (!extractedRoomId) {
-      setError('Invalid room ID or URL format');
+      setError("Invalid room ID or URL format");
       return;
     }
 
     setRoomId(extractedRoomId);
-    setUrlInput('');
+    setUrlInput("");
   };
 
   const handleChangeRoom = () => {
@@ -86,11 +117,12 @@ export default function JoinPage() {
       socket.disconnect();
       setSocket(null);
     }
-    setRoomId('');
-    setVideoId('');
+    setRoomId("");
+    setVideoId("");
     setIsConnected(false);
-    setSyncStatus('RESYNCING');
-    setError('');
+    setSyncStatus("RESYNCING");
+    setError("");
+    setRoomState(null);
   };
 
   useEffect(() => {
@@ -103,40 +135,42 @@ export default function JoinPage() {
       reconnectionAttempts: 10,
     });
 
-    socketInstance.on('connect', async () => {
-      console.log('✅ Connected to server');
+    socketInstance.on("connect", async () => {
+      console.log("✅ Connected to server");
 
       await clockSync.current.calibrate(socketInstance);
+      clockSync.current.startPeriodicSync(socketInstance);
+
       setIsConnected(true);
-      setSyncStatus('SYNCED');
+      setSyncStatus("SYNCED");
 
       let userId = `joiner-${Date.now()}`;
-      let userName = '';
-      let userEmail = '';
-      if (typeof window !== 'undefined') {
-        const userStr = localStorage.getItem('auth_user');
+      let userName = "";
+      let userEmail = "";
+      if (typeof window !== "undefined") {
+        const userStr = localStorage.getItem("auth_user");
         if (userStr) {
           try {
             const user = JSON.parse(userStr);
             userId = user.id;
-            userName = user.name || '';
-            userEmail = user.email || '';
+            userName = user.name || "";
+            userEmail = user.email || "";
           } catch (e) {}
         } else {
-          const storedGuestId = localStorage.getItem('guest_id');
+          const storedGuestId = localStorage.getItem("guest_id");
           if (storedGuestId) {
             userId = storedGuestId;
           } else {
-            localStorage.setItem('guest_id', userId);
+            localStorage.setItem("guest_id", userId);
           }
         }
       }
 
-      socketInstance.emit('room:join', { 
-        roomId, 
+      socketInstance.emit("room:join", {
+        roomId,
         userId,
         userName,
-        userEmail
+        userEmail,
       });
 
       const syncInterval = setInterval(() => {
@@ -147,38 +181,63 @@ export default function JoinPage() {
       return () => clearInterval(syncInterval);
     });
 
-    socketInstance.on('room:state', (state: RoomState) => {
-      console.log('📡 Room state received:', state);
-      setVideoId(state.videoId || '');
+    socketInstance.on("room:state", (state: RoomState) => {
+      console.log("📡 Room state received:", state);
+      setRoomState(state);
+      setVideoId(state.videoId || "");
+
+      if (state.hlsStatus === "ready" && state.hlsUrl) {
+        setMode("file");
+      } else if (state.videoId) {
+        setMode("youtube");
+      }
+
       if (state.videoTitle) {
         setVideoTitle(state.videoTitle);
       }
 
-      if (state.status === 'PLAYING') {
+      if (state.status === "PLAYING") {
         const serverTime = clockSync.current.getServerTime();
         const timeDelta = (serverTime - state.serverTimeUpdatedAt) / 1000;
         expectedPositionRef.current = state.videoProgress + timeDelta;
         isPlayingRef.current = true;
-        if (playerRef.current) {
+        if (mode === "youtube" && playerRef.current) {
           playerRef.current.playVideo();
         }
       } else {
         expectedPositionRef.current = state.videoProgress;
         isPlayingRef.current = false;
-        if (playerRef.current) {
+        if (mode === "youtube" && playerRef.current) {
           playerRef.current.pauseVideo();
         }
       }
     });
 
-    socketInstance.on('room:participant-count', (data: { count: number }) => {
+    socketInstance.on("room:participant-count", (data: { count: number }) => {
       setParticipantCount(data.count);
     });
 
-    socketInstance.on('disconnect', () => {
-      console.log('❌ Disconnected from server');
+    // NEW: Zero-latency heartbeat listener
+    socketInstance.on(
+      "sync:heartbeat",
+      ({ progress, serverTime }: { progress: number; serverTime: number }) => {
+        const transitTimeMs = clockSync.current.getServerTime() - serverTime;
+        const transitTimeSec = Math.max(0, transitTimeMs / 1000);
+        expectedPositionRef.current = progress + transitTimeSec;
+      },
+    );
+
+    socketInstance.on(
+      "stream:ready",
+      (data: { hlsUrl: string; fileType: "video" | "audio" }) => {
+        setMode("file");
+      },
+    );
+
+    socketInstance.on("disconnect", () => {
+      console.log("❌ Disconnected from server");
       setIsConnected(false);
-      setSyncStatus('RESYNCING');
+      setSyncStatus("RESYNCING");
     });
 
     setSocket(socketInstance);
@@ -186,101 +245,64 @@ export default function JoinPage() {
     return () => {
       socketInstance.disconnect();
     };
-  }, [roomId]);
+  }, [roomId, mode]);
 
-  // Sync Loop
+  // Sync Loop for YouTube
   useEffect(() => {
     const syncInterval = setInterval(async () => {
-      if (!playerRef.current || !isConnected || !isPlayingRef.current) return;
+      if (
+        mode !== "youtube" ||
+        !playerRef.current ||
+        !isConnected ||
+        !isPlayingRef.current
+      )
+        return;
 
       try {
         const currentVideoTime = await playerRef.current.getCurrentTime();
-        
-        // Advance expected position if playing
+
+        // Expected position is now accurately set by the 1s heartbeat
+        // We only advance it here between heartbeats slightly
         expectedPositionRef.current += 0.5;
 
         const driftSeconds = expectedPositionRef.current - currentVideoTime;
-        setDrift(Math.abs(driftSeconds * 1000));
+        const driftMs = driftSeconds * 1000;
+        setDrift(Math.abs(driftMs));
 
-        if (Math.abs(driftSeconds) > 2.0) {
-          // Hard seek if drift is more than 2s
+        const { rate, hardSeek } =
+          rateController.current.calculatePlaybackRate(driftMs);
+
+        if (hardSeek) {
           playerRef.current.seekTo(expectedPositionRef.current, true);
-          setSyncStatus('RESYNCING');
+          setSyncStatus("RESYNCING");
         } else {
-          // In sync (natural YouTube buffering handles small drift)
-          setSyncStatus('SYNCED');
+          // Playback rate nudging
+          if (rate !== 1.0) {
+            playerRef.current.setPlaybackRate(rate);
+            setSyncStatus("ADJUSTING");
+          } else {
+            playerRef.current.setPlaybackRate(1.0);
+            setSyncStatus("SYNCED");
+          }
         }
       } catch (e) {}
     }, 500);
 
     return () => clearInterval(syncInterval);
-  }, [isConnected]);
-
-  // Volume control
-  useEffect(() => {
-    if (playerRef.current) {
-      playerRef.current.setVolume(volume);
-      if (isMuted) {
-        playerRef.current.mute();
-      } else {
-        playerRef.current.unMute();
-      }
-    }
-  }, [volume, isMuted]);
+  }, [isConnected, mode]);
 
   const onPlayerReady = (event: YouTubeEvent) => {
     playerRef.current = event.target;
-    playerRef.current.setVolume(volume);
-    if (isMuted) playerRef.current.mute();
-    
-    // Set initial position
-    if (expectedPositionRef.current > 0) {
-      playerRef.current.seekTo(expectedPositionRef.current, true);
-    }
+    // Force mute initially to bypass browser autoplay policies
+    event.target.mute();
+    event.target.setVolume(100);
     if (isPlayingRef.current) {
-      playerRef.current.playVideo();
-    }
-  };
-
-  const onPlayerStateChange = (event: YouTubeEvent) => {
-    // Prevent looping or auto-playing when it shouldn't
-    const state = event.data;
-    if (state === 0) { // ENDED
-      event.target.pauseVideo();
-    } else if (state === 1 && !isPlayingRef.current) { // Playing but host is paused
-      event.target.pauseVideo();
-    }
-  };
-
-  const getSyncStatusColor = () => {
-    switch (syncStatus) {
-      case 'SYNCED': return 'from-emerald-500 to-green-500';
-      case 'ADJUSTING': return 'from-amber-500 to-orange-500';
-      case 'RESYNCING': return 'from-red-500 to-rose-500';
-      default: return 'from-gray-500 to-gray-600';
-    }
-  };
-
-  const getSyncStatusText = () => {
-    switch (syncStatus) {
-      case 'SYNCED': return '● Synced';
-      case 'ADJUSTING': return '● Adjusting';
-      case 'RESYNCING': return '● Resyncing';
-      default: return 'Connecting...';
-    }
-  };
-
-  const getSyncDotColor = () => {
-    switch (syncStatus) {
-      case 'SYNCED': return 'bg-emerald-400';
-      case 'ADJUSTING': return 'bg-amber-400';
-      case 'RESYNCING': return 'bg-red-400';
-      default: return 'bg-gray-400';
+      event.target.playVideo();
     }
   };
 
   const copyRoomUrl = () => {
-    const url = `${window.location.origin}/join?roomId=${roomId}`;
+    const url = `${typeof window !== "undefined" ? window.location.origin : ""}/join?roomId=${roomId}`;
     navigator.clipboard.writeText(url);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -290,89 +312,151 @@ export default function JoinPage() {
     <div className="min-h-screen bg-[#0a0a12] text-white relative overflow-hidden">
       {/* Animated background */}
       <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute -top-48 -right-48 w-[500px] h-[500px] bg-cyan-600/12 rounded-full blur-[120px] animate-pulse" />
-        <div className="absolute -bottom-48 -left-48 w-[500px] h-[500px] bg-blue-600/12 rounded-full blur-[120px] animate-pulse" style={{ animationDelay: '1.5s' }} />
+        <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-[120px] animate-pulse" />
+        <div
+          className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] bg-indigo-600/10 rounded-full blur-[120px] animate-pulse"
+          style={{ animationDelay: "2s" }}
+        />
       </div>
 
       <div className="relative z-10 p-4 sm:p-6">
-        <div className="max-w-5xl mx-auto">
+        <div className="max-w-6xl mx-auto">
           {/* Header */}
           <div className="flex justify-between items-center mb-8 flex-wrap gap-4">
             <Link href="/" className="group flex items-center gap-3">
-              <ArrowLeft size={18} className="text-gray-500 group-hover:text-cyan-400 transition-colors" />
-              <h1 className="text-2xl sm:text-3xl font-extrabold bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
+              <ArrowLeft
+                size={18}
+                className="text-gray-500 group-hover:text-blue-400 transition-colors"
+              />
+              <h1 className="text-2xl sm:text-3xl font-extrabold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
                 Join Stream
               </h1>
             </Link>
+
             {roomId && (
-              <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl px-4 py-2 flex items-center gap-2 max-w-sm w-full sm:w-auto">
-                <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider">Room</p>
-                  <p className="text-sm font-mono font-bold text-cyan-400 truncate">{videoTitle || `${roomId.slice(0, 16)}...`}</p>
-                </div>
-              </div>
-            )}
-            {isConnected && (
-              <div className={`px-4 py-2 rounded-xl bg-gradient-to-r ${getSyncStatusColor()} text-white text-sm font-bold flex items-center gap-2 shadow-lg`}>
-                <Zap size={14} />
-                {getSyncStatusText()}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setIsAudioMode(!isAudioMode)}
+                  className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center gap-2 ${
+                    isAudioMode
+                      ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                      : "bg-white/[0.05] text-gray-400 border border-white/[0.05] hover:bg-white/[0.1]"
+                  }`}
+                >
+                  {isAudioMode ? <Music size={16} /> : <VideoIcon size={16} />}
+                  {isAudioMode ? "Audio Mode" : "Video Mode"}
+                </button>
+                <button
+                  onClick={handleChangeRoom}
+                  className="px-4 py-2 bg-white/[0.05] border border-white/[0.1] hover:bg-white/[0.1] rounded-xl text-sm text-gray-300 transition-all duration-200 flex items-center gap-2"
+                >
+                  <RefreshCw size={14} />
+                  Change Room
+                </button>
               </div>
             )}
           </div>
 
-          {videoId && isConnected && roomId ? (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Main Player */}
-              <div className="lg:col-span-2">
-                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl">
-                  <div className={`aspect-video bg-black relative ${isAudioMode ? 'hidden' : 'block'}`}>
-                    <YouTube
-                      videoId={videoId}
-                      opts={{
-                        width: '100%',
-                        height: '100%',
-                        playerVars: {
-                          autoplay: 1,
-                          controls: 0,
-                          disablekb: 1,
-                          modestbranding: 1,
-                          rel: 0,
-                        },
-                      }}
-                      onReady={onPlayerReady}
-                      onStateChange={onPlayerStateChange}
-                      className="absolute inset-0 w-full h-full"
+          {!roomId ? (
+            <div className="max-w-md mx-auto mt-20">
+              <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-8 shadow-2xl relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-indigo-500" />
+                <h2 className="text-xl font-bold mb-6 text-center text-gray-200">
+                  Enter Room Details
+                </h2>
+                <form onSubmit={handleJoinRoom} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Room URL or ID
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Paste link here..."
+                      value={urlInput}
+                      onChange={(e) => setUrlInput(e.target.value)}
+                      className="w-full px-4 py-3 bg-[#0a0a12] border border-white/[0.08] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 transition-all duration-200"
                     />
-                    {/* Transparent overlay to prevent joiner interactions */}
-                    <div className="absolute inset-0 bg-transparent pointer-events-auto cursor-not-allowed" />
                   </div>
+                  {error && (
+                    <p className="text-red-400 text-sm text-center bg-red-400/10 py-2 rounded-lg">
+                      {error}
+                    </p>
+                  )}
+                  <button
+                    type="submit"
+                    className="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:shadow-lg hover:shadow-blue-500/25 hover:-translate-y-0.5 rounded-xl font-bold transition-all duration-200"
+                  >
+                    Join Room
+                  </button>
+                </form>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Main Player Area */}
+              <div className="lg:col-span-2">
+                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl relative">
+                  {isAudioMode ? (
+                    // AUDIO MODE UI
+                    <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center p-8">
+                      <div className="w-32 h-32 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-6 relative">
+                        {isPlayingRef.current && (
+                          <div
+                            className="absolute inset-0 rounded-full border border-blue-400/30 animate-ping"
+                            style={{ animationDuration: "3s" }}
+                          />
+                        )}
+                        <Music
+                          size={48}
+                          className={
+                            isPlayingRef.current
+                              ? "text-blue-400"
+                              : "text-gray-600"
+                          }
+                        />
+                      </div>
+                      <h3 className="text-xl font-bold text-gray-200 mb-2">
+                        {videoTitle || "Audio Mode Active"}
+                      </h3>
+                      <p className="text-gray-500 text-sm mb-8 text-center max-w-md">
+                        Video playback is disabled to save data and battery.
+                        Audio is fully synchronized with the host.
+                      </p>
 
-                  {isAudioMode && (
-                    <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center relative overflow-hidden">
-                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20">
-                         {/* Simple visualizer bars effect */}
-                         <div className="flex items-center gap-2 h-32">
-                           {[...Array(12)].map((_, i) => (
-                             <div key={i} className={`w-3 bg-cyan-400 rounded-full animate-pulse`} style={{ height: `${20 + Math.random() * 80}%`, animationDuration: `${0.5 + Math.random()}s` }} />
-                           ))}
-                         </div>
+                      {/* Hidden player for audio mode */}
+                      <div className="hidden">
+                        {mode === "youtube" ? (
+                          <YouTube
+                            videoId={videoId}
+                            opts={{
+                              width: "100",
+                              height: "100",
+                              playerVars: { autoplay: 0, controls: 0 },
+                            }}
+                            onReady={onPlayerReady}
+                          />
+                        ) : roomState?.hlsStatus === "ready" &&
+                          roomState?.hlsUrl ? (
+                          <AudioPlayer
+                            hlsUrl={roomState.hlsUrl}
+                            socket={socket}
+                            isHost={false}
+                            serverNow={() => clockSync.current.getServerTime()}
+                          />
+                        ) : null}
                       </div>
-                      <div className="w-20 h-20 rounded-full bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center mb-6 relative z-10 shadow-[0_0_50px_rgba(6,182,212,0.15)]">
-                        <Music size={36} className="text-cyan-400" />
-                      </div>
-                      <h3 className="text-xl font-bold text-white relative z-10">Audio Mode</h3>
-                      <p className="text-cyan-400/70 text-sm mt-2 relative z-10">Listening in sync with lower latency</p>
-                      
-                      {/* Hidden YouTube player for audio mode */}
-                      <div className="absolute w-0 h-0 opacity-0 pointer-events-none overflow-hidden">
+                    </div>
+                  ) : // VIDEO MODE UI
+                  mode === "youtube" ? (
+                    videoId ? (
+                      <div className="aspect-video bg-black relative">
                         <YouTube
                           videoId={videoId}
                           opts={{
-                            width: '10px',
-                            height: '10px',
+                            width: "100%",
+                            height: "100%",
                             playerVars: {
-                              autoplay: 1,
+                              autoplay: 0,
                               controls: 0,
                               disablekb: 1,
                               modestbranding: 1,
@@ -380,193 +464,213 @@ export default function JoinPage() {
                             },
                           }}
                           onReady={onPlayerReady}
-                          onStateChange={onPlayerStateChange}
+                          className="absolute inset-0 w-full h-full pointer-events-none"
                         />
+                        {/* Unmute Overlay */}
+                        {isMuted && (
+                          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center z-10 transition-opacity">
+                            <button
+                              onClick={() => {
+                                setIsMuted(false);
+                                if (playerRef.current) {
+                                  playerRef.current.unMute();
+                                  playerRef.current.setVolume(volume);
+                                }
+                              }}
+                              className="group flex flex-col items-center gap-4"
+                            >
+                              <div className="w-20 h-20 bg-blue-600 hover:bg-blue-500 rounded-full flex items-center justify-center shadow-lg shadow-blue-500/30 transition-transform group-hover:scale-110">
+                                <Volume2 size={32} className="text-white" />
+                              </div>
+                              <span className="text-xl font-bold tracking-wide">
+                                Click to Unmute Stream
+                              </span>
+                            </button>
+                          </div>
+                        )}
                       </div>
+                    ) : (
+                      <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center">
+                        <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-4">
+                          <div className="w-4 h-4 rounded-full bg-gray-600 animate-pulse" />
+                        </div>
+                        <p className="text-gray-500 text-sm">
+                          Waiting for host to start a video...
+                        </p>
+                      </div>
+                    )
+                  ) : (
+                    <div className="aspect-video bg-black relative">
+                      {roomState?.hlsStatus === "ready" && roomState?.hlsUrl ? (
+                        <VideoPlayer
+                          hlsUrl={roomState.hlsUrl}
+                          socket={socket}
+                          isHost={false}
+                          serverNow={() => clockSync.current.getServerTime()}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center text-gray-500">
+                          <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin mb-4" />
+                          Waiting for host...
+                        </div>
+                      )}
                     </div>
                   )}
 
-                  {/* Status Bar */}
-                  <div className="p-4 border-t border-white/[0.06] text-center text-sm text-gray-400 bg-white/[0.02]">
-                    <p>✨ You are a passive viewer — use the volume controls to adjust audio</p>
+                  {/* Room Info Bar */}
+                  <div className="p-4 border-t border-white/[0.06] bg-white/[0.02] flex items-center justify-between flex-wrap gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
+                        <span className="font-bold text-blue-400">R</span>
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-200 truncate max-w-xs">
+                          {videoTitle || `Room ${roomId.slice(0, 8)}`}
+                        </p>
+                        <p className="text-xs text-gray-500 font-mono">
+                          {roomId}
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={copyRoomUrl}
+                      className="px-4 py-2 bg-white/[0.05] hover:bg-white/[0.1] rounded-lg text-sm text-gray-300 transition-colors flex items-center gap-2"
+                    >
+                      {copied ? (
+                        <Check size={14} className="text-emerald-400" />
+                      ) : (
+                        <Copy size={14} />
+                      )}
+                      {copied ? "Copied!" : "Copy Link"}
+                    </button>
                   </div>
                 </div>
               </div>
 
-              {/* Sidebar Controls & Info */}
+              {/* Sidebar */}
               <div className="space-y-5">
-                {/* Volume Control */}
+                {/* Connection Status */}
                 <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
-                  <h3 className="text-base font-bold mb-4 text-cyan-400 flex items-center gap-2">
+                  <h3 className="text-base font-bold mb-4 text-blue-400 flex items-center gap-2">
+                    <Zap size={16} />
+                    Sync Status
+                  </h3>
+
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between p-3 bg-white/[0.02] rounded-xl border border-white/[0.04]">
+                      <span className="text-sm text-gray-400">State</span>
+                      <div className="flex items-center gap-2">
+                        {syncStatus === "SYNCED" && (
+                          <>
+                            <div className="w-2 h-2 rounded-full bg-emerald-400" />
+                            <span className="text-emerald-400 font-medium text-sm">
+                              Perfect
+                            </span>
+                          </>
+                        )}
+                        {syncStatus === "ADJUSTING" && (
+                          <>
+                            <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                            <span className="text-blue-400 font-medium text-sm">
+                              Micro-adjusting
+                            </span>
+                          </>
+                        )}
+                        {syncStatus === "RESYNCING" && (
+                          <>
+                            <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                            <span className="text-amber-400 font-medium text-sm">
+                              Seeking
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-3 bg-white/[0.02] rounded-xl border border-white/[0.04]">
+                        <p className="text-xs text-gray-500 mb-1">
+                          Latency (RTT)
+                        </p>
+                        <p className="text-lg font-mono text-gray-200">
+                          {rtt}ms
+                        </p>
+                      </div>
+                      <div className="p-3 bg-white/[0.02] rounded-xl border border-white/[0.04]">
+                        <p className="text-xs text-gray-500 mb-1">
+                          Clock Drift
+                        </p>
+                        <p
+                          className={`text-lg font-mono ${drift < 100 ? "text-emerald-400" : drift < 500 ? "text-amber-400" : "text-red-400"}`}
+                        >
+                          {drift.toFixed(0)}ms
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Local Audio Control */}
+                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
+                  <h3 className="text-base font-bold mb-4 text-gray-300 flex items-center gap-2">
                     <Volume2 size={16} />
-                    Audio Control
+                    Local Volume
                   </h3>
                   <div className="space-y-4">
                     <div className="flex items-center gap-3">
-                      {isMuted ? (
-                        <VolumeX size={20} className="text-red-400 shrink-0" />
+                      {isMuted || volume === 0 ? (
+                        <VolumeX
+                          size={20}
+                          className="text-gray-500 shrink-0 cursor-pointer"
+                          onClick={() => setIsMuted(false)}
+                        />
                       ) : (
-                        <Volume2 size={20} className="text-cyan-400 shrink-0" />
+                        <Volume2
+                          size={20}
+                          className="text-blue-400 shrink-0 cursor-pointer"
+                          onClick={() => setIsMuted(true)}
+                        />
                       )}
                       <input
                         type="range"
                         min="0"
                         max="100"
                         value={isMuted ? 0 : volume}
-                        onChange={(e) => setVolume(parseFloat(e.target.value))}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setVolume(val);
+                          if (val > 0) setIsMuted(false);
+                          if (mode === "youtube" && playerRef.current) {
+                            playerRef.current.setVolume(val);
+                            if (val > 0) playerRef.current.unMute();
+                            else playerRef.current.mute();
+                          }
+                        }}
                         className="flex-1 h-1.5 rounded-lg appearance-none cursor-pointer"
                         style={{
-                          background: `linear-gradient(to right, rgb(6, 182, 212) 0%, rgb(6, 182, 212) ${volume}%, rgba(255,255,255,0.06) ${volume}%, rgba(255,255,255,0.06) 100%)`,
+                          background: `linear-gradient(to right, rgb(96, 165, 250) 0%, rgb(96, 165, 250) ${volume}%, rgba(255,255,255,0.06) ${volume}%, rgba(255,255,255,0.06) 100%)`,
                         }}
                       />
                     </div>
-                    <p className="text-center text-xs text-gray-500 font-medium">
-                      {isMuted ? '🔇 Muted' : `${volume}%`}
-                    </p>
-                    <button
-                      onClick={() => setIsMuted(!isMuted)}
-                      className={`w-full py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 ${
-                        isMuted
-                          ? 'bg-white/[0.05] border border-white/[0.08] hover:bg-white/[0.08] text-gray-300'
-                          : 'bg-cyan-600/20 border border-cyan-500/30 hover:bg-cyan-600/30 text-cyan-300'
-                      }`}
-                    >
-                      {isMuted ? 'Unmute' : 'Mute'}
-                    </button>
                   </div>
                 </div>
 
-                {/* Sync Metrics */}
-                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
-                  <h3 className="text-base font-bold mb-4 text-blue-400">📊 Sync Metrics</h3>
-                  <div className="space-y-2.5">
-                    <div className="flex justify-between items-center p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
-                      <span className="text-gray-500 text-sm">Status</span>
-                      <span className="flex items-center gap-2 text-sm font-bold">
-                        <div className={`w-2 h-2 rounded-full ${getSyncDotColor()} ${syncStatus === 'SYNCED' ? '' : 'animate-pulse'}`} />
-                        <span className={syncStatus === 'SYNCED' ? 'text-emerald-400' : syncStatus === 'ADJUSTING' ? 'text-amber-400' : 'text-red-400'}>
-                          {syncStatus}
-                        </span>
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
-                      <span className="text-gray-500 text-sm">RTT</span>
-                      <span className="font-mono text-cyan-400 font-bold text-sm">{rtt}ms</span>
-                    </div>
-                    <div className="flex justify-between items-center p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
-                      <span className="text-gray-500 text-sm">Drift</span>
-                      <span className="font-mono text-violet-400 font-bold text-sm">{Math.round(drift)}ms</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Room Info */}
-                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl">
-                  <h3 className="text-base font-bold mb-4 text-rose-400">🔐 Room Info</h3>
-                  <div className="space-y-3">
-                    <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
-                      <p className="text-gray-500 text-xs mb-1">Room ID</p>
-                      <p className="text-cyan-400 font-mono text-xs break-all">{roomId}</p>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04] text-center">
-                        <p className="text-gray-500 text-xs mb-1">Status</p>
-                        <p className="text-emerald-400 font-bold text-sm">Connected</p>
-                      </div>
-                      <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04] text-center">
-                        <p className="text-gray-500 text-xs mb-1">Viewers</p>
-                        <p className="text-blue-400 font-bold text-sm">{participantCount}</p>
-                      </div>
-                    </div>
-                    <button
-                      onClick={copyRoomUrl}
-                      className="w-full py-2.5 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 border border-violet-500/30 text-violet-300 font-semibold rounded-xl hover:from-violet-600/30 hover:to-fuchsia-600/30 transition-all duration-200 flex items-center justify-center gap-2 text-sm"
-                    >
-                      {copied ? (
-                        <>
-                          <Check size={14} />
-                          Copied!
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={14} />
-                          Copy Room URL
-                        </>
-                      )}
-                    </button>
-                    <button
-                      onClick={handleChangeRoom}
-                      className="w-full py-2.5 bg-white/[0.03] border border-white/[0.06] text-gray-400 font-medium rounded-xl hover:bg-white/[0.06] hover:text-white transition-all duration-200 flex items-center justify-center gap-2 text-sm"
-                    >
-                      <RefreshCw size={14} />
-                      Change Room
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : !roomId ? (
-            // Join Room Input Screen
-            <div className="max-w-2xl mx-auto pt-8">
-              <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-8 shadow-2xl">
-                <h2 className="text-2xl font-extrabold mb-2 bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
-                  Join a Stream
-                </h2>
-                <p className="text-gray-400 mb-6 text-sm">
-                  Enter the room URL or ID shared by the host to join a synchronized stream
-                </p>
-
-                <form onSubmit={handleJoinRoom} className="space-y-4">
+                {/* Room Stats */}
+                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl p-6 shadow-xl flex items-center justify-between">
                   <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">Room URL or ID</label>
-                    <input
-                      type="text"
-                      placeholder="Paste room URL or ID here..."
-                      value={urlInput}
-                      onChange={(e) => setUrlInput(e.target.value)}
-                      className="w-full px-4 py-3.5 bg-white/[0.03] border border-white/[0.08] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/10 transition-all duration-200"
-                    />
-                    <p className="text-xs text-gray-500 mt-2">
-                      ℹ️ Paste the share URL from the host or just the room ID
+                    <p className="text-sm text-gray-400 mb-1">
+                      Viewers in Room
+                    </p>
+                    <p className="text-2xl font-bold text-gray-200">
+                      {participantCount}
                     </p>
                   </div>
-
-                  {error && (
-                     <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
-                      ❌ {error}
-                    </div>
-                  )}
-
-                  <button
-                    type="submit"
-                    className="w-full py-3.5 bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-semibold rounded-xl hover:shadow-lg hover:shadow-cyan-500/25 hover:-translate-y-0.5 transition-all duration-200"
-                  >
-                    Join Stream
-                  </button>
-                </form>
-
-                <div className="mt-6 p-4 bg-white/[0.02] border border-white/[0.04] rounded-xl">
-                  <p className="font-semibold mb-2 text-sm text-gray-300">📌 Accepted formats:</p>
-                  <ul className="space-y-1.5 text-xs text-gray-500">
-                    <li className="flex items-center gap-2">
-                      <span className="text-emerald-400">✓</span>
-                      <span className="font-mono">http://localhost:3000/join?roomId=room-1234567890</span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <span className="text-emerald-400">✓</span>
-                      <span className="font-mono">room-1234567890</span>
-                    </li>
-                  </ul>
+                  <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center">
+                    <div className="w-3 h-3 rounded-full bg-blue-400 animate-pulse" />
+                  </div>
                 </div>
               </div>
-            </div>
-          ) : (
-            // Loading screen
-            <div className="flex flex-col items-center justify-center h-64 gap-4">
-              <div className="relative">
-                <div className="w-12 h-12 border-2 border-white/[0.06] border-t-cyan-400 rounded-full animate-spin" />
-              </div>
-              <p className="text-gray-500 text-sm">Connecting to stream...</p>
             </div>
           )}
         </div>

@@ -13,11 +13,11 @@ RUN cd server && npm install
 # Copy source code
 COPY . .
 
-# Install openssl for Prisma
-RUN apk add --no-cache openssl
+# Install ffmpeg for HLS transcoding
+RUN apk add --no-cache ffmpeg
 
-# Generate Prisma client and build server
-RUN cd server && npx prisma generate && npm run build
+# Build server
+RUN cd server && npm run build
 
 # Build client (with NEXT_PUBLIC_SERVER_URL set)
 ARG NEXT_PUBLIC_SERVER_URL=http://localhost:4000
@@ -29,8 +29,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install bash, procps and openssl for start-prod.sh and Prisma
-RUN apk add --no-cache bash procps openssl
+# Install bash, procps and ffmpeg for start-prod.sh and transcoding
+RUN apk add --no-cache bash procps ffmpeg
 
 # Copy package files
 COPY --from=build /app/client/package*.json ./client/
@@ -44,16 +44,13 @@ RUN cd server && npm install --omit=dev
 COPY --from=build /app/client/.next ./client/.next
 COPY --from=build /app/client/public ./client/public
 COPY --from=build /app/server/dist ./server/dist
-COPY --from=build /app/server/prisma ./server/prisma
-COPY --from=build /app/server/node_modules/.prisma ./server/node_modules/.prisma
 COPY --from=build /app/scripts ./scripts
 
 # Set environment
 ENV NODE_ENV=production
-ENV DATABASE_URL="file:./prod.db"
 
 # Expose Next.js and Express ports
 EXPOSE 3000 4000
 
-# Push DB schema before starting and then run start-prod.sh
-CMD cd server && npx prisma db push && cd .. && bash ./scripts/start-prod.sh
+# Run start-prod.sh
+CMD bash ./scripts/start-prod.sh

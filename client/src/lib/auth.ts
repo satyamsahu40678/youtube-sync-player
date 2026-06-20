@@ -20,11 +20,13 @@ declare global {
             callback: (response: { credential: string }) => void;
             auto_select?: boolean;
           }) => void;
-          prompt: (callback?: (notification: {
-            isNotDisplayed: () => boolean;
-            isSkippedMoment: () => boolean;
-            getNotDisplayedReason: () => string;
-          }) => void) => void;
+          prompt: (
+            callback?: (notification: {
+              isNotDisplayed: () => boolean;
+              isSkippedMoment: () => boolean;
+              getNotDisplayedReason: () => string;
+            }) => void,
+          ) => void;
           renderButton: (element: HTMLElement, config: object) => void;
           revoke: (hint: string, callback: () => void) => void;
         };
@@ -42,7 +44,7 @@ function decodeJwtPayload(token: string): Record<string, string> {
       atob(base64)
         .split("")
         .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-        .join("")
+        .join(""),
     );
     return JSON.parse(jsonPayload);
   } catch {
@@ -87,7 +89,9 @@ export const authService = {
   // Sign in with Google (Google Identity Services popup flow)
   async signInWithGoogle(): Promise<AuthUser | null> {
     if (!GOOGLE_CLIENT_ID) {
-      console.warn("Google Sign-In is not configured. Using Mock Google Login for development.");
+      console.warn(
+        "Google Sign-In is not configured. Using Mock Google Login for development.",
+      );
       const mockUser: AuthUser = {
         id: `google-mock-${Date.now()}`,
         email: "mock.user@gmail.com",
@@ -105,7 +109,9 @@ export const authService = {
       // Try waiting a moment for the script to load
       await new Promise((resolve) => setTimeout(resolve, 1000));
       if (!window.google?.accounts?.id) {
-        console.warn("Google Sign-In library failed to load. Falling back to mock login.");
+        console.warn(
+          "Google Sign-In library failed to load. Falling back to mock login.",
+        );
         const mockUser: AuthUser = {
           id: `google-mock-${Date.now()}`,
           email: "mock.user@gmail.com",
@@ -123,42 +129,58 @@ export const authService = {
       try {
         window.google!.accounts.id.initialize({
           client_id: GOOGLE_CLIENT_ID,
-        callback: (response) => {
-          try {
-            const payload = decodeJwtPayload(response.credential);
-            const user: AuthUser = {
-              id: `google-${payload.sub}`,
-              email: payload.email,
-              name: payload.name,
-              image: payload.picture,
-              provider: "google",
-            };
-            localStorage.setItem(AUTH_KEYS.USER, JSON.stringify(user));
-            localStorage.setItem(AUTH_KEYS.LAST_EMAIL, user.email);
-            resolve(user);
-          } catch (err) {
-            reject(new Error("Failed to process Google sign-in response"));
-          }
-        },
-      });
+          callback: (response) => {
+            try {
+              const payload = decodeJwtPayload(response.credential);
+              const user: AuthUser = {
+                id: `google-${payload.sub}`,
+                email: payload.email,
+                name: payload.name,
+                image: payload.picture,
+                provider: "google",
+              };
+              localStorage.setItem(AUTH_KEYS.USER, JSON.stringify(user));
+              localStorage.setItem(AUTH_KEYS.LAST_EMAIL, user.email);
+              resolve(user);
+            } catch (err) {
+              reject(new Error("Failed to process Google sign-in response"));
+            }
+          },
+        });
 
-      window.google!.accounts.id.prompt((notification) => {
-        if (notification.isNotDisplayed()) {
-          const reason = notification.getNotDisplayedReason();
-          if (reason === "opt_out_or_no_session") {
-            console.warn("No Google session found. Falling back to mock.");
-            const mockUser: AuthUser = {
-              id: `google-mock-${Date.now()}`,
-              email: "mock.user@gmail.com",
-              name: "Mock Google User",
-              image: "https://api.dicebear.com/7.x/avataaars/svg?seed=Mock",
-              provider: "google",
-            };
-            localStorage.setItem(AUTH_KEYS.USER, JSON.stringify(mockUser));
-            localStorage.setItem(AUTH_KEYS.LAST_EMAIL, mockUser.email);
-            resolve(mockUser);
-          } else {
-            console.warn(`Google Sign-In popup was not displayed: ${reason}. Falling back to mock.`);
+        window.google!.accounts.id.prompt((notification) => {
+          if (notification.isNotDisplayed()) {
+            const reason = notification.getNotDisplayedReason();
+            if (reason === "opt_out_or_no_session") {
+              console.warn("No Google session found. Falling back to mock.");
+              const mockUser: AuthUser = {
+                id: `google-mock-${Date.now()}`,
+                email: "mock.user@gmail.com",
+                name: "Mock Google User",
+                image: "https://api.dicebear.com/7.x/avataaars/svg?seed=Mock",
+                provider: "google",
+              };
+              localStorage.setItem(AUTH_KEYS.USER, JSON.stringify(mockUser));
+              localStorage.setItem(AUTH_KEYS.LAST_EMAIL, mockUser.email);
+              resolve(mockUser);
+            } else {
+              console.warn(
+                `Google Sign-In popup was not displayed: ${reason}. Falling back to mock.`,
+              );
+              const mockUser: AuthUser = {
+                id: `google-mock-${Date.now()}`,
+                email: "mock.user@gmail.com",
+                name: "Mock Google User",
+                image: "https://api.dicebear.com/7.x/avataaars/svg?seed=Mock",
+                provider: "google",
+              };
+              localStorage.setItem(AUTH_KEYS.USER, JSON.stringify(mockUser));
+              localStorage.setItem(AUTH_KEYS.LAST_EMAIL, mockUser.email);
+              resolve(mockUser);
+            }
+          } else if (notification.isSkippedMoment()) {
+            // If skipped, we can just resolve the mock user so it doesn't break
+            console.warn("Google Sign-In was dismissed. Falling back to mock.");
             const mockUser: AuthUser = {
               id: `google-mock-${Date.now()}`,
               email: "mock.user@gmail.com",
@@ -170,21 +192,7 @@ export const authService = {
             localStorage.setItem(AUTH_KEYS.LAST_EMAIL, mockUser.email);
             resolve(mockUser);
           }
-        } else if (notification.isSkippedMoment()) {
-          // If skipped, we can just resolve the mock user so it doesn't break
-          console.warn("Google Sign-In was dismissed. Falling back to mock.");
-          const mockUser: AuthUser = {
-            id: `google-mock-${Date.now()}`,
-            email: "mock.user@gmail.com",
-            name: "Mock Google User",
-            image: "https://api.dicebear.com/7.x/avataaars/svg?seed=Mock",
-            provider: "google",
-          };
-          localStorage.setItem(AUTH_KEYS.USER, JSON.stringify(mockUser));
-          localStorage.setItem(AUTH_KEYS.LAST_EMAIL, mockUser.email);
-          resolve(mockUser);
-        }
-      });
+        });
       } catch (e) {
         console.warn("Google Sign In failed, falling back to mock:", e);
         const mockUser: AuthUser = {

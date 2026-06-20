@@ -1,11 +1,18 @@
 // Server Types & Interfaces
 
 export interface RoomState {
+  // YouTube Fields (Legacy)
   videoId: string | null;
   videoTitle?: string | null;
   status: "PLAYING" | "PAUSED";
   videoProgress: number; // in seconds
   serverTimeUpdatedAt: number; // Epoch ms
+
+  // File Upload / HLS Fields
+  hlsStatus: "waiting" | "uploading" | "transcoding" | "ready" | "error";
+  fileType: "video" | "audio" | null;
+  hlsUrl: string | null;
+  fileName: string | null;
 }
 
 export interface SyncMessage {
@@ -25,4 +32,12 @@ export interface RoomStateMessage {
   status: "PLAYING" | "PAUSED";
   videoProgress: number;
   serverTimeUpdatedAt: number;
+}
+
+export interface ChunkUploadBody {
+  roomId: string;
+  chunkIndex: string;
+  totalChunks: string;
+  fileName: string;
+  fileType: string;
 }

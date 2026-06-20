@@ -3,8 +3,16 @@ import dotenv from "dotenv";
 import express, { Request, Response } from "express";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
-import prisma from "./db";
+import path from "path";
 import { ClockSyncResponse, RoomState, RoomStateMessage } from "./types";
+
+// Import services and routes from our new architecture
+import { getRedis, closeRedis } from "./services/redis";
+import uploadRouter from "./routes/upload";
+import {
+  startTranscodingWorker,
+  setWorkerIO,
+} from "./workers/transcodingWorker";
 
 dotenv.config();
 
@@ -15,13 +23,62 @@ const io = new SocketIOServer(httpServer, {
     origin: process.env.CLIENT_URL || "http://localhost:3000",
     methods: ["GET", "POST"],
   },
+  maxHttpBufferSize: 1e7, // 10MB for socket messages
 });
 
 app.use(cors());
 app.use(express.json());
 
-// In-memory room states (in production, use Redis)
+// ─── HLS Static Files ──────────────────────────────────────────────
+const hlsDir = path.resolve(__dirname, "../../hls");
+app.use(
+  "/hls",
+  (req, res, next) => {
+    if (req.path.endsWith(".ts")) {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    } else if (req.path.endsWith(".m3u8")) {
+      res.setHeader("Cache-Control", "no-cache");
+    }
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    next();
+  },
+  express.static(hlsDir),
+);
+
+// ─── API Routes ─────────────────────────────────────────────────────
+app.use("/api/upload", uploadRouter);
+
+// In-memory room states for real-time fast sync (YouTube mode)
+// Note: We sync this to Redis occasionally for REST API usage
 const roomStates: Map<string, RoomState> = new Map();
+
+// Helper to save room info to Redis for persistence and REST API
+async function saveRoomToRedis(roomId: string, hostId: string, title: string) {
+  const redis = getRedis();
+  const roomData = {
+    id: roomId,
+    hostId,
+    title,
+    createdAt: Date.now(),
+    isActive: true,
+  };
+  await redis.hset(`rooms`, roomId, JSON.stringify(roomData));
+}
+
+async function updateRoomVideoInRedis(
+  roomId: string,
+  videoId: string,
+  videoTitle: string,
+) {
+  const redis = getRedis();
+  const roomJson = await redis.hget(`rooms`, roomId);
+  if (roomJson) {
+    const roomData = JSON.parse(roomJson);
+    roomData.currentVideoId = videoId;
+    roomData.title = videoTitle;
+    await redis.hset(`rooms`, roomId, JSON.stringify(roomData));
+  }
+}
 
 // Socket.io event handlers
 io.on("connection", (socket) => {
@@ -37,76 +94,70 @@ io.on("connection", (socket) => {
   });
 
   // Room join event
-  socket.on("room:join", async (data: { roomId: string; userId: string; userName?: string; userEmail?: string }) => {
-    const { roomId, userId, userName, userEmail } = data;
+  socket.on(
+    "room:join",
+    async (data: {
+      roomId: string;
+      userId: string;
+      userName?: string;
+      userEmail?: string;
+    }) => {
+      const { roomId, userId, userName, userEmail } = data;
 
-    try {
-      // Join Socket.io room
-      socket.join(roomId);
-      console.log(`[ROOM] User ${userId} joined room ${roomId}`);
-
-      // Get or create room state
-      let roomState = roomStates.get(roomId);
-      if (!roomState) {
-        roomState = {
-          videoId: null,
-          videoTitle: null,
-          status: "PAUSED",
-          videoProgress: 0,
-          serverTimeUpdatedAt: Date.now(),
-        };
-        roomStates.set(roomId, roomState);
-      }
-
-      // Send current room state to the joining user
-      socket.emit("room:state", roomState as RoomStateMessage);
-
-      // Broadcast updated participant count
-      const participantCount = io.sockets.adapter.rooms.get(roomId)?.size || 0;
-      io.to(roomId).emit("room:participant-count", { count: participantCount });
-
-      // Log to database robustly
       try {
-        // Ensure user exists
-        let user = await prisma.user.findUnique({ where: { id: userId } });
-        if (!user) {
-          user = await prisma.user.create({
-            data: {
-              id: userId,
-              email: userEmail || `${userId}@guest.local`,
-              name: userName || `Guest ${userId.slice(0, 4)}`,
-            },
-          });
+        socket.join(roomId);
+        console.log(`[ROOM] User ${userId} joined room ${roomId}`);
+
+        let roomState = roomStates.get(roomId);
+        if (!roomState) {
+          roomState = {
+            videoId: null,
+            videoTitle: null,
+            status: "PAUSED",
+            videoProgress: 0,
+            serverTimeUpdatedAt: Date.now(),
+            hlsStatus: "waiting",
+            fileType: null,
+            hlsUrl: null,
+            fileName: null,
+          };
+          roomStates.set(roomId, roomState);
         }
 
-        // Ensure room exists
-        let room = await prisma.room.findUnique({ where: { id: roomId } });
-        if (!room) {
-          room = await prisma.room.create({
-            data: {
-              id: roomId,
-              hostId: userId, // Default to first person joining if not created via REST
-              title: `Room ${roomId.slice(0, 8)}`,
-              isActive: true,
-            },
-          });
-        }
+        socket.emit("room:state", roomState as RoomStateMessage);
 
-        // Create participant
-        await prisma.sessionParticipant.create({
-          data: {
-            roomId,
-            userId,
-          },
+        const participantCount =
+          io.sockets.adapter.rooms.get(roomId)?.size || 0;
+        io.to(roomId).emit("room:participant-count", {
+          count: participantCount,
         });
-      } catch (dbErr) {
-        console.error("DB error creating participant/room:", dbErr);
+
+        const redis = getRedis();
+
+        // Save User to Redis
+        const userObj = {
+          id: userId,
+          email: userEmail || `${userId}@guest.local`,
+          name: userName || `Guest ${userId.slice(0, 4)}`,
+        };
+        await redis.hset(`users`, userId, JSON.stringify(userObj));
+
+        // Save Room to Redis if not exists
+        const existingRoom = await redis.hget(`rooms`, roomId);
+        if (!existingRoom) {
+          await saveRoomToRedis(roomId, userId, `Room ${roomId.slice(0, 8)}`);
+        }
+
+        // Add participant to room in Redis
+        await redis.sadd(`room:${roomId}:participants`, userId);
+        // Add to user's joined rooms history
+        await redis.sadd(`user:${userId}:history`, roomId);
+      } catch (error) {
+        console.error("Error joining room:", error);
+        socket.emit("error", { message: "Failed to join room" });
       }
-    } catch (error) {
-      console.error("Error joining room:", error);
-      socket.emit("error", { message: "Failed to join room" });
-    }
-  });
+    },
+  );
 
   // Host updates video
   socket.on(
@@ -119,6 +170,10 @@ io.on("connection", (socket) => {
         status: "PAUSED",
         videoProgress: 0,
         serverTimeUpdatedAt: Date.now(),
+        hlsStatus: "waiting",
+        fileType: null,
+        hlsUrl: null,
+        fileName: null,
       };
 
       roomState.videoId = videoId;
@@ -132,14 +187,14 @@ io.on("connection", (socket) => {
 
       io.to(roomId).emit("room:state", roomState as RoomStateMessage);
 
-      // Save to DB and fetch real YouTube title
+      // Fetch real YouTube title
       try {
         let videoTitle = `Room ${roomId.slice(0, 8)}`;
         try {
           const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
           const response = await fetch(oembedUrl);
           if (response.ok) {
-            const data = await response.json() as any;
+            const data = (await response.json()) as any;
             if (data && data.title) {
               videoTitle = data.title;
               roomState.videoTitle = videoTitle;
@@ -149,14 +204,7 @@ io.on("connection", (socket) => {
         } catch (fetchErr) {
           console.error("Failed to fetch YouTube oEmbed title", fetchErr);
         }
-
-        await prisma.room.update({
-          where: { id: roomId },
-          data: { 
-            currentVideoId: videoId,
-            title: videoTitle
-          },
-        });
+        await updateRoomVideoInRedis(roomId, videoId, videoTitle);
       } catch (err) {
         console.error("Failed to update room video in DB:", err);
       }
@@ -195,9 +243,22 @@ io.on("connection", (socket) => {
     if (roomState) {
       roomState.videoProgress = progress;
       roomState.serverTimeUpdatedAt = Date.now();
-
-      // We don't log periodic seeks to console to avoid spam
       io.to(roomId).emit("room:state", roomState as RoomStateMessage);
+    }
+  });
+
+  // NEW: Zero-latency heartbeat
+  socket.on("sync:heartbeat", (data: { roomId: string; progress: number }) => {
+    const roomState = roomStates.get(data.roomId);
+    if (roomState) {
+      roomState.videoProgress = data.progress;
+      roomState.serverTimeUpdatedAt = Date.now();
+
+      // Stamp with server time exactly before emitting, volatile to drop stale ones
+      socket.to(data.roomId).volatile.emit("sync:heartbeat", {
+        progress: data.progress,
+        serverTime: Date.now(),
+      });
     }
   });
 
@@ -214,31 +275,25 @@ app.get("/health", (req: Request, res: Response) => {
 app.post("/rooms/create", async (req: Request, res: Response) => {
   try {
     const { roomId, hostId, title, hostName, hostEmail } = req.body;
+    const redis = getRedis();
 
-    // Ensure user exists or create it
-    let user = await prisma.user.findUnique({
-      where: { id: hostId },
-    });
-
-    if (!user) {
-      user = await prisma.user.create({
-        data: {
-          id: hostId,
-          name: hostName || "Host",
-          email: hostEmail || `${hostId}@syncplay.local`,
-        },
-      });
+    // Ensure user exists
+    const userJson = await redis.hget(`users`, hostId);
+    if (!userJson) {
+      const newUser = {
+        id: hostId,
+        name: hostName || "Host",
+        email: hostEmail || `${hostId}@syncplay.local`,
+      };
+      await redis.hset(`users`, hostId, JSON.stringify(newUser));
     }
 
-    const room = await prisma.room.create({
-      data: {
-        id: roomId, // Use explicit ID from client
-        hostId: user.id,
-        title: title || `Room ${roomId.slice(0, 8)}`,
-      },
-    });
-
-    res.json({ roomId: room.id });
+    await saveRoomToRedis(
+      roomId,
+      hostId,
+      title || `Room ${roomId.slice(0, 8)}`,
+    );
+    res.json({ roomId });
   } catch (error) {
     console.error("Error creating room:", error);
     res.status(500).json({ error: "Failed to create room" });
@@ -247,31 +302,33 @@ app.post("/rooms/create", async (req: Request, res: Response) => {
 
 app.get("/rooms/active", async (req: Request, res: Response) => {
   try {
-    const activeRooms = await prisma.room.findMany({
-      where: { isActive: true },
-      include: {
-        host: true,
-        participants: true,
-      },
-      orderBy: {
-        participants: {
-          _count: "desc",
-        },
-      },
-      take: 10,
-    });
-    
-    const result = activeRooms.map((r) => ({
-      id: r.id,
-      title: r.title,
-      hostId: r.hostId,
-      hostName: r.host.name,
-      currentVideoId: r.currentVideoId,
-      participantCount: r.participants.length,
-      createdAt: r.createdAt,
-    }));
-    
-    res.json(result);
+    const redis = getRedis();
+    const rooms = await redis.hgetall(`rooms`);
+
+    const activeRooms = [];
+    for (const roomId in rooms) {
+      const r = JSON.parse(rooms[roomId]);
+      if (r.isActive) {
+        const hostJson = await redis.hget(`users`, r.hostId);
+        const hostName = hostJson ? JSON.parse(hostJson).name : "Unknown";
+        const participantCount = await redis.scard(
+          `room:${roomId}:participants`,
+        );
+
+        activeRooms.push({
+          id: r.id,
+          title: r.title,
+          hostId: r.hostId,
+          hostName,
+          currentVideoId: r.currentVideoId,
+          participantCount,
+          createdAt: r.createdAt,
+        });
+      }
+    }
+
+    activeRooms.sort((a, b) => b.participantCount - a.participantCount);
+    res.json(activeRooms.slice(0, 10));
   } catch (error) {
     console.error("Error fetching active rooms:", error);
     res.status(500).json({ error: "Failed to fetch active rooms" });
@@ -281,29 +338,31 @@ app.get("/rooms/active", async (req: Request, res: Response) => {
 app.get("/users/:userId/history", async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
-    
-    const hosted = await prisma.room.findMany({
-      where: { hostId: userId },
-      orderBy: { createdAt: "desc" },
-    });
-    
-    const participations = await prisma.sessionParticipant.findMany({
-      where: { userId },
-      include: { room: true },
-      orderBy: { joinedAt: "desc" },
-    });
-    
-    const joinedRoomMap = new Map();
-    for (const p of participations) {
-      if (p.room.hostId !== userId && !joinedRoomMap.has(p.roomId)) {
-        joinedRoomMap.set(p.roomId, p.room);
+    const redis = getRedis();
+
+    const allRooms = await redis.hgetall(`rooms`);
+    const hosted = [];
+    for (const roomId in allRooms) {
+      const r = JSON.parse(allRooms[roomId]);
+      if (r.hostId === userId) {
+        hosted.push(r);
       }
     }
-    
-    res.json({
-      hosted,
-      joined: Array.from(joinedRoomMap.values()),
-    });
+    hosted.sort((a, b) => b.createdAt - a.createdAt);
+
+    const joinedIds = await redis.smembers(`user:${userId}:history`);
+    const joined = [];
+    for (const roomId of joinedIds) {
+      if (allRooms[roomId]) {
+        const r = JSON.parse(allRooms[roomId]);
+        if (r.hostId !== userId) {
+          joined.push(r);
+        }
+      }
+    }
+    joined.sort((a, b) => b.createdAt - a.createdAt);
+
+    res.json({ hosted, joined });
   } catch (error) {
     console.error("Error fetching history:", error);
     res.status(500).json({ error: "Failed to fetch history" });
@@ -314,13 +373,17 @@ app.delete("/history/hosted/:roomId", async (req: Request, res: Response) => {
   try {
     const { roomId } = req.params;
     const { userId } = req.query;
-    
-    const room = await prisma.room.findUnique({ where: { id: roomId } });
-    if (!room || room.hostId !== userId) {
+    const redis = getRedis();
+
+    const roomJson = await redis.hget(`rooms`, roomId);
+    if (!roomJson) return res.status(404).json({ error: "Not found" });
+    const room = JSON.parse(roomJson);
+
+    if (room.hostId !== userId)
       return res.status(403).json({ error: "Unauthorized" });
-    }
-    
-    await prisma.room.delete({ where: { id: roomId } });
+
+    await redis.hdel(`rooms`, roomId);
+    await redis.del(`room:${roomId}:participants`);
     roomStates.delete(roomId);
     res.json({ success: true });
   } catch (error) {
@@ -332,10 +395,10 @@ app.delete("/history/joined/:roomId", async (req: Request, res: Response) => {
   try {
     const { roomId } = req.params;
     const { userId } = req.query;
-    
-    await prisma.sessionParticipant.deleteMany({
-      where: { roomId, userId: String(userId) },
-    });
+    const redis = getRedis();
+
+    await redis.srem(`user:${String(userId)}:history`, roomId);
+    await redis.srem(`room:${roomId}:participants`, String(userId));
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: "Failed to delete history" });
@@ -345,21 +408,20 @@ app.delete("/history/joined/:roomId", async (req: Request, res: Response) => {
 app.get("/rooms/:roomId/info", async (req: Request, res: Response) => {
   try {
     const { roomId } = req.params;
-    const room = await prisma.room.findUnique({
-      where: { id: roomId },
-      include: { host: true, participants: true },
-    });
-
-    if (!room) {
+    const redis = getRedis();
+    const roomJson = await redis.hget(`rooms`, roomId);
+    if (!roomJson) {
       return res.status(404).json({ error: "Room not found" });
     }
+    const room = JSON.parse(roomJson);
+    const participantCount = await redis.scard(`room:${roomId}:participants`);
 
     res.json({
       id: room.id,
       hostId: room.hostId,
       title: room.title,
       isActive: room.isActive,
-      participantCount: room.participants.length,
+      participantCount,
     });
   } catch (error) {
     console.error("Error fetching room info:", error);
@@ -369,15 +431,43 @@ app.get("/rooms/:roomId/info", async (req: Request, res: Response) => {
 
 const PORT = process.env.PORT || 4000;
 
-httpServer.listen(PORT, () => {
+// Set Socket IO instance in transcoder worker
+setWorkerIO(io);
+
+// Start worker but don't crash if Redis is unavailable yet
+let worker: any = null;
+try {
+  worker = startTranscodingWorker();
+} catch (e) {
+  console.log(
+    "[WORKER] Transcoding worker failed to start. Ensure Redis is running.",
+  );
+}
+
+httpServer.listen(PORT, async () => {
   console.log(`\n🚀 YouTube Sync Server is running on port ${PORT}`);
   console.log(`   WebSocket: ws://localhost:${PORT}`);
   console.log(`   HTTP: http://localhost:${PORT}`);
+  console.log(`   HLS: http://localhost:${PORT}/hls/`);
+
+  // Verify Redis connection
+  const redis = getRedis();
+  try {
+    await redis.ping();
+    console.log("[REDIS] Connection verified");
+  } catch (err: any) {
+    console.error("[REDIS] Connection failed:", err.message);
+    console.error(
+      "[REDIS] Make sure Redis is running. Try: docker compose up redis -d",
+    );
+  }
 });
 
 // Graceful shutdown
 process.on("SIGINT", async () => {
   console.log("\n📴 Shutting down server...");
-  await prisma.$disconnect();
+  if (worker) await worker.close();
+  await closeRedis();
+  httpServer.close();
   process.exit(0);
 });

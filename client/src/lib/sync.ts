@@ -6,30 +6,40 @@ import { SyncMetrics } from "./types";
  */
 export class NTPClockSync {
   private clockOffset: number = 0; // Milliseconds
-  private rttSamples: number[] = [];
-  private readonly sampleSize = 5;
+  private rttSamples: { offset: number; rtt: number }[] = [];
+  private readonly sampleSize = 10;
+
+  // Use performance.now() for sub-millisecond precision
+  private performanceBase = Date.now() - performance.now();
+
+  private preciseNow(): number {
+    return this.performanceBase + performance.now();
+  }
 
   /**
    * Perform a single clock sync ping-pong exchange.
    * Returns RTT and offset measurements.
    */
   async performSync(socket: any): Promise<{ rtt: number; offset: number }> {
-    const t1 = Date.now();
+    const t1 = this.preciseNow();
 
     return new Promise((resolve) => {
       socket.emit("clock-sync:ping", t1);
 
       socket.once("clock-sync:pong", (response: any) => {
-        const t4 = Date.now();
+        const t4 = this.preciseNow();
         const { serverReceiveTime: t2, serverSendTime: t3 } = response;
 
         const rtt = t4 - t1 - (t3 - t2);
         const offset = (t2 - t1 + (t3 - t4)) / 2;
 
-        this.rttSamples.push(rtt);
         resolve({ rtt, offset });
       });
     });
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -38,29 +48,39 @@ export class NTPClockSync {
   async calibrate(socket: any): Promise<void> {
     console.log("🔄 Calibrating clock synchronization...");
 
+    this.rttSamples = [];
+
     for (let i = 0; i < this.sampleSize; i++) {
-      const { rtt, offset } = await this.performSync(socket);
-      this.clockOffset = offset;
-      console.log(
-        `  Sample ${i + 1}/${this.sampleSize}: RTT=${rtt.toFixed(2)}ms, Offset=${offset.toFixed(2)}ms`,
-      );
+      const sample = await this.performSync(socket);
+      this.rttSamples.push(sample);
+      await this.sleep(80); // 80ms apart for fast calibration
     }
 
-    // Discard highest RTT and average the rest
-    const validSamples = this.rttSamples.slice(0, this.sampleSize - 1);
-    const avgRtt =
-      validSamples.reduce((a, b) => a + b, 0) / validSamples.length;
+    // Sort by RTT and take the best 7 samples
+    const sorted = [...this.rttSamples].sort((a, b) => a.rtt - b.rtt);
+    const best7 = sorted.slice(0, 7);
+
+    // Calculate median of the best 7 samples
+    const offsets = best7.map((s) => s.offset).sort((a, b) => a - b);
+    this.clockOffset = offsets[Math.floor(offsets.length / 2)];
 
     console.log(
-      `✅ Clock sync calibrated. Average RTT: ${avgRtt.toFixed(2)}ms, Offset: ${this.clockOffset.toFixed(2)}ms`,
+      `✅ Clock sync calibrated. Median Offset: ${this.clockOffset.toFixed(2)}ms`,
     );
+  }
+
+  /**
+   * Auto re-sync every interval (e.g. 15 seconds)
+   */
+  startPeriodicSync(socket: any, intervalMs: number = 15000): void {
+    setInterval(() => this.calibrate(socket), intervalMs);
   }
 
   /**
    * Get the current server time adjusted for client clock offset.
    */
   getServerTime(): number {
-    return Date.now() + this.clockOffset;
+    return this.preciseNow() + this.clockOffset;
   }
 
   /**
@@ -68,7 +88,10 @@ export class NTPClockSync {
    */
   getMetrics(): Omit<SyncMetrics, "driftMs" | "status"> {
     const avgRtt =
-      this.rttSamples.reduce((a, b) => a + b, 0) / this.rttSamples.length;
+      this.rttSamples.length > 0
+        ? this.rttSamples.reduce((a, b) => a + b.rtt, 0) /
+          this.rttSamples.length
+        : 0;
     return {
       rtt: avgRtt,
       clockOffset: this.clockOffset,
@@ -77,7 +100,7 @@ export class NTPClockSync {
 }
 
 /**
- * Playback rate controller using PI feedback loop.
+ * Playback rate controller using proportional feedback loop.
  * Smoothly adjusts playback speed to match expected position.
  */
 export class PlaybackRateController {
@@ -88,45 +111,27 @@ export class PlaybackRateController {
    * drift > 0: we're behind (need to speed up)
    * drift < 0: we're ahead (need to slow down)
    */
-  calculatePlaybackRate(driftMs: number): number {
-    const TOLERANCE_MS = 50;
-    const MIN_DRIFT_TO_ADJUST = 50;
-    const MAX_DRIFT_TO_ADJUST = 1500;
-    const HARD_SEEK_THRESHOLD = 1500;
+  calculatePlaybackRate(driftMs: number): { rate: number; hardSeek: boolean } {
+    const abs = Math.abs(driftMs);
 
-    // Within tolerance: maintain normal speed
-    if (Math.abs(driftMs) < TOLERANCE_MS) {
+    // < 30ms -> Do nothing (Perfect sync)
+    if (abs < 30) {
       this.playbackRate = 1.0;
-      return 1.0;
+      return { rate: 1.0, hardSeek: false };
     }
 
-    // Significant drift: adjust speed
-    if (
-      Math.abs(driftMs) >= MIN_DRIFT_TO_ADJUST &&
-      driftMs < HARD_SEEK_THRESHOLD
-    ) {
-      if (driftMs > 0) {
-        // Behind: speed up
-        this.playbackRate = 1.05;
-      } else {
-        // Ahead: slow down
-        this.playbackRate = 0.95;
-      }
-
-      // Once drift is corrected, return to normal
-      if (Math.abs(driftMs) < 20) {
-        this.playbackRate = 1.0;
-      }
+    // > 2000ms -> Hard seek (Jump, last resort)
+    if (abs > 2000) {
+      this.playbackRate = 1.0;
+      return { rate: 1.0, hardSeek: true };
     }
 
-    return this.playbackRate;
-  }
+    // Proportional: bigger drift = bigger correction
+    // Maps 30-2000ms drift to 0.01-0.08 rate adjustment
+    const intensity = Math.min((abs - 30) / 2000, 0.08);
+    this.playbackRate = driftMs > 0 ? 1.0 + intensity : 1.0 - intensity;
 
-  /**
-   * Determine if a hard seek is needed.
-   */
-  shouldHardSeek(driftMs: number): boolean {
-    return Math.abs(driftMs) >= 1500;
+    return { rate: this.playbackRate, hardSeek: false };
   }
 
   getCurrentRate(): number {
