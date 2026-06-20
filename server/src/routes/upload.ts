@@ -68,6 +68,12 @@ router.post("/chunk", upload.single("chunk"), async (req, res) => {
       await redis.hset("rooms", roomId, JSON.stringify(room));
     }
 
+    const { getOrCreateRoomState } = require("../state");
+    const roomState = getOrCreateRoomState(roomId);
+    roomState.hlsStatus = "uploading";
+    roomState.fileName = fileName;
+    roomState.fileType = fileType as "video" | "audio";
+
     // If this is the last chunk, assemble and transcode
     if (currentIndex === total - 1) {
       // Wait briefly for all chunks to flush to disk
@@ -141,6 +147,10 @@ async function assembleAndQueue(
     room.hlsStatus = "transcoding";
     await redis.hset("rooms", roomId, JSON.stringify(room));
   }
+
+  const { getOrCreateRoomState } = require("../state");
+  const roomState = getOrCreateRoomState(roomId);
+  roomState.hlsStatus = "transcoding";
 
   console.log(`[UPLOAD] Transcoding job queued for room ${roomId}`);
 }

@@ -50,7 +50,7 @@ app.use("/api/upload", uploadRouter);
 
 // In-memory room states for real-time fast sync (YouTube mode)
 // Note: We sync this to Redis occasionally for REST API usage
-const roomStates: Map<string, RoomState> = new Map();
+// Removed local roomStates map in favor of state.ts
 
 // Helper to save room info to Redis for persistence and REST API
 async function saveRoomToRedis(roomId: string, hostId: string, title: string) {
@@ -80,6 +80,8 @@ async function updateRoomVideoInRedis(
   }
 }
 
+import { roomStates, getOrCreateRoomState } from "./state";
+
 // Socket.io event handlers
 io.on("connection", (socket) => {
   console.log(`[SOCKET] User connected: ${socket.id}`);
@@ -108,22 +110,7 @@ io.on("connection", (socket) => {
         socket.join(roomId);
         console.log(`[ROOM] User ${userId} joined room ${roomId}`);
 
-        let roomState = roomStates.get(roomId);
-        if (!roomState) {
-          roomState = {
-            videoId: null,
-            videoTitle: null,
-            status: "PAUSED",
-            videoProgress: 0,
-            serverTimeUpdatedAt: Date.now(),
-            hlsStatus: "waiting",
-            fileType: null,
-            hlsUrl: null,
-            fileName: null,
-          };
-          roomStates.set(roomId, roomState);
-        }
-
+        const roomState = getOrCreateRoomState(roomId);
         socket.emit("room:state", roomState as RoomStateMessage);
 
         const participantCount =
@@ -164,17 +151,7 @@ io.on("connection", (socket) => {
     "room:update-video",
     async (data: { roomId: string; videoId: string }) => {
       const { roomId, videoId } = data;
-      const roomState = roomStates.get(roomId) || {
-        videoId: null,
-        videoTitle: null,
-        status: "PAUSED",
-        videoProgress: 0,
-        serverTimeUpdatedAt: Date.now(),
-        hlsStatus: "waiting",
-        fileType: null,
-        hlsUrl: null,
-        fileName: null,
-      };
+      const roomState = getOrCreateRoomState(roomId);
 
       roomState.videoId = videoId;
       roomState.videoTitle = `Room ${roomId.slice(0, 8)}`;
@@ -182,7 +159,6 @@ io.on("connection", (socket) => {
       roomState.status = "PLAYING";
       roomState.serverTimeUpdatedAt = Date.now();
 
-      roomStates.set(roomId, roomState);
       console.log(`[ROOM] Room ${roomId} video updated to ${videoId}`);
 
       io.to(roomId).emit("room:state", roomState as RoomStateMessage);
@@ -247,16 +223,21 @@ io.on("connection", (socket) => {
     }
   });
 
-  // NEW: Zero-latency heartbeat
-  socket.on("sync:heartbeat", (data: { roomId: string; progress: number }) => {
+  // Zero-latency heartbeat
+  socket.on("sync:heartbeat", (data: { roomId: string; progress?: number; currentTime?: number }) => {
+    if (!data.roomId) return; // Ignore malformed events missing roomId
+
+    const progress = data.progress ?? data.currentTime; // Handle both formats
+    if (progress === undefined || isNaN(progress)) return;
+
     const roomState = roomStates.get(data.roomId);
     if (roomState) {
-      roomState.videoProgress = data.progress;
+      roomState.videoProgress = progress;
       roomState.serverTimeUpdatedAt = Date.now();
 
       // Stamp with server time exactly before emitting, volatile to drop stale ones
       socket.to(data.roomId).volatile.emit("sync:heartbeat", {
-        progress: data.progress,
+        progress,
         serverTime: Date.now(),
       });
     }

@@ -9,6 +9,7 @@ import SyncIndicator from "./SyncIndicator";
 import QualityBadge from "./QualityBadge";
 
 interface VideoPlayerProps {
+  roomId: string;
   hlsUrl: string;
   socket: Socket | null;
   isHost: boolean;
@@ -16,6 +17,7 @@ interface VideoPlayerProps {
 }
 
 export default function VideoPlayer({
+  roomId,
   hlsUrl,
   socket,
   isHost,
@@ -90,6 +92,7 @@ export default function VideoPlayer({
 
   // Sync engine
   useSyncEngine({
+    roomId,
     socket,
     isHost,
     serverNow,

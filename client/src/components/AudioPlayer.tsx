@@ -9,6 +9,7 @@ import SyncIndicator from "./SyncIndicator";
 import QualityBadge from "./QualityBadge";
 
 interface AudioPlayerProps {
+  roomId: string;
   hlsUrl: string;
   socket: Socket | null;
   isHost: boolean;
@@ -16,6 +17,7 @@ interface AudioPlayerProps {
 }
 
 export default function AudioPlayer({
+  roomId,
   hlsUrl,
   socket,
   isHost,
@@ -163,6 +165,7 @@ export default function AudioPlayer({
 
   // Sync engine
   useSyncEngine({
+    roomId,
     socket,
     isHost,
     serverNow,

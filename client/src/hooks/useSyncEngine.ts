@@ -6,6 +6,7 @@ import { PlaybackRateController } from "@/lib/sync";
 import { MediaState, SyncStatus } from "@/lib/types";
 
 interface UseSyncEngineOptions {
+  roomId: string;
   socket: Socket | null;
   isHost: boolean;
   serverNow: () => number;
@@ -19,6 +20,7 @@ interface UseSyncEngineOptions {
  * VIEWER mode: receives sync events and applies them to the media element with drift correction.
  */
 export function useSyncEngine({
+  roomId,
   socket,
   isHost,
   serverNow,
@@ -30,12 +32,13 @@ export function useSyncEngine({
 
   // ─── HOST MODE ──────────────────────────────────────────────────
   useEffect(() => {
-    if (!isHost || !socket || !mediaRef.current) return;
+    if (!isHost || !socket || !mediaRef.current || !roomId) return;
     const media = mediaRef.current;
 
     const onPlay = () => {
       if (isSyncingRef.current) return;
       socket.emit("sync:play", {
+        roomId,
         currentTime: media.currentTime,
         serverTime: serverNow(),
       });
@@ -44,6 +47,7 @@ export function useSyncEngine({
     const onPause = () => {
       if (isSyncingRef.current) return;
       socket.emit("sync:pause", {
+        roomId,
         currentTime: media.currentTime,
       });
     };
@@ -51,6 +55,7 @@ export function useSyncEngine({
     const onSeeked = () => {
       if (isSyncingRef.current) return;
       socket.emit("sync:seek", {
+        roomId,
         currentTime: media.currentTime,
         serverTime: serverNow(),
       });
@@ -60,6 +65,7 @@ export function useSyncEngine({
     const heartbeat = setInterval(() => {
       if (!media.paused && !media.ended) {
         socket.emit("sync:heartbeat", {
+          roomId,
           currentTime: media.currentTime,
         });
       }

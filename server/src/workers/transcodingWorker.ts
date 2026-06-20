@@ -47,9 +47,17 @@ export function startTranscodingWorker(): Worker {
         },
       );
 
+      // Update in-memory room state so new viewers get it immediately
+      const { getOrCreateRoomState } = require("../state");
+      const roomState = getOrCreateRoomState(roomId);
+      roomState.hlsStatus = "ready";
+      roomState.hlsUrl = hlsUrl;
+      roomState.fileType = fileType;
+
       // Notify all clients that the stream is ready
       if (io) {
         io.to(roomId).emit("stream:ready", { hlsUrl, fileType });
+        io.to(roomId).emit("room:state", roomState);
       }
 
       console.log(

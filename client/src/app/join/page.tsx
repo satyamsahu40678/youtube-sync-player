@@ -438,6 +438,7 @@ export default function JoinPage() {
                         ) : roomState?.hlsStatus === "ready" &&
                           roomState?.hlsUrl ? (
                           <AudioPlayer
+                            roomId={roomId}
                             hlsUrl={roomState.hlsUrl}
                             socket={socket}
                             isHost={false}
@@ -503,6 +504,7 @@ export default function JoinPage() {
                     <div className="aspect-video bg-black relative">
                       {roomState?.hlsStatus === "ready" && roomState?.hlsUrl ? (
                         <VideoPlayer
+                          roomId={roomId}
                           hlsUrl={roomState.hlsUrl}
                           socket={socket}
                           isHost={false}

@@ -489,6 +489,7 @@ export default function HostPage() {
                         roomState?.hlsUrl ? (
                         roomState.fileType === "audio" ? (
                           <AudioPlayer
+                            roomId={roomId}
                             hlsUrl={roomState.hlsUrl}
                             socket={socket}
                             isHost={true}
@@ -496,6 +497,7 @@ export default function HostPage() {
                           />
                         ) : (
                           <VideoPlayer
+                            roomId={roomId}
                             hlsUrl={roomState.hlsUrl}
                             socket={socket}
                             isHost={true}
