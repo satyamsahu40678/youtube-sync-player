@@ -20,13 +20,13 @@ pkill -f "node" || true
 sleep 1
 
 # Start backend
-cd "$(dirname "$0")/../server" || exit 1
+cd "$PROJECT_ROOT/server" || exit 1
 node dist/index.js > /tmp/youtube-sync-server-prod.log 2>&1 &
 SERVER_PID=$!
 echo -e "${GREEN}✓ Backend server started (PID: $SERVER_PID)${NC}"
 
 # Start frontend (Next.js production)
-cd "$(dirname "$0")/../client" || exit 1
+cd "$PROJECT_ROOT/client" || exit 1
 npm run start > /tmp/youtube-sync-client-prod.log 2>&1 &
 CLIENT_PID=$!
 echo -e "${GREEN}✓ Frontend server started (PID: $CLIENT_PID)${NC}"
@@ -35,4 +35,4 @@ echo -e "${GREEN}✓ Production servers running!${NC}"
 echo -e "${BLUE}Frontend: http://localhost:3000${NC}"
 echo -e "${BLUE}Backend: http://localhost:4000${NC}"
 
-wait
+tail -f /tmp/youtube-sync-server-prod.log /tmp/youtube-sync-client-prod.log

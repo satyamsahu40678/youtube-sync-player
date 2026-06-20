@@ -13,6 +13,9 @@ RUN cd server && npm install
 # Copy source code
 COPY . .
 
+# Install openssl for Prisma
+RUN apk add --no-cache openssl
+
 # Generate Prisma client and build server
 RUN cd server && npx prisma generate && npm run build
 
@@ -26,8 +29,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install bash and procps for start-prod.sh
-RUN apk add --no-cache bash procps
+# Install bash, procps and openssl for start-prod.sh and Prisma
+RUN apk add --no-cache bash procps openssl
 
 # Copy package files
 COPY --from=build /app/client/package*.json ./client/
@@ -47,7 +50,6 @@ COPY --from=build /app/scripts ./scripts
 
 # Set environment
 ENV NODE_ENV=production
-ENV PORT=4000
 ENV DATABASE_URL="file:./prod.db"
 
 # Expose Next.js and Express ports
