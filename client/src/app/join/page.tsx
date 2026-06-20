@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import Link from 'next/link';
 import { Volume2, VolumeX, Zap, Copy, Check, ArrowLeft, RefreshCw } from 'lucide-react';
-import { NTPClockSync, PlaybackRateController } from '@/lib/sync';
+import { NTPClockSync } from '@/lib/sync';
 import { RoomState } from '@/lib/types';
+import YouTube, { YouTubeEvent, YouTubePlayer } from 'react-youtube';
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
 
@@ -24,11 +25,10 @@ export default function JoinPage() {
   const [error, setError] = useState('');
   const [participantCount, setParticipantCount] = useState(1);
 
-  const playerRef = useRef<HTMLIFrameElement>(null);
+  const playerRef = useRef<YouTubePlayer | null>(null);
   const clockSync = useRef(new NTPClockSync());
-  const rateController = useRef(new PlaybackRateController());
-  const lastPositionRef = useRef(0);
   const expectedPositionRef = useRef(0);
+  const isPlayingRef = useRef(false);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -123,19 +123,16 @@ export default function JoinPage() {
         const serverTime = clockSync.current.getServerTime();
         const timeDelta = (serverTime - state.serverTimeUpdatedAt) / 1000;
         expectedPositionRef.current = state.videoProgress + timeDelta;
+        isPlayingRef.current = true;
+        if (playerRef.current) {
+          playerRef.current.playVideo();
+        }
       } else {
         expectedPositionRef.current = state.videoProgress;
-      }
-
-      const currentDrift = expectedPositionRef.current - lastPositionRef.current;
-      setDrift(Math.abs(currentDrift));
-
-      if (Math.abs(currentDrift) > 1500) {
-        setSyncStatus('RESYNCING');
-      } else if (Math.abs(currentDrift) > 50) {
-        setSyncStatus('ADJUSTING');
-      } else {
-        setSyncStatus('SYNCED');
+        isPlayingRef.current = false;
+        if (playerRef.current) {
+          playerRef.current.pauseVideo();
+        }
       }
     });
 
@@ -156,13 +153,65 @@ export default function JoinPage() {
     };
   }, [roomId]);
 
+  // Sync Loop
   useEffect(() => {
-    const positionInterval = setInterval(() => {
-      lastPositionRef.current = expectedPositionRef.current;
-    }, 100);
+    const syncInterval = setInterval(async () => {
+      if (!playerRef.current || !isConnected || !isPlayingRef.current) return;
 
-    return () => clearInterval(positionInterval);
-  }, []);
+      try {
+        const currentVideoTime = await playerRef.current.getCurrentTime();
+        
+        // Advance expected position if playing
+        expectedPositionRef.current += 0.5;
+
+        const driftSeconds = expectedPositionRef.current - currentVideoTime;
+        setDrift(Math.abs(driftSeconds * 1000));
+
+        if (Math.abs(driftSeconds) > 1.5) {
+          // Hard seek if drift is more than 1.5s
+          playerRef.current.seekTo(expectedPositionRef.current, true);
+          setSyncStatus('RESYNCING');
+        } else if (Math.abs(driftSeconds) > 0.1) {
+          // Soft adjust via playback rate
+          const newRate = driftSeconds > 0 ? 1.05 : 0.95;
+          playerRef.current.setPlaybackRate(newRate);
+          setSyncStatus('ADJUSTING');
+        } else {
+          // In sync
+          playerRef.current.setPlaybackRate(1.0);
+          setSyncStatus('SYNCED');
+        }
+      } catch (e) {}
+    }, 500);
+
+    return () => clearInterval(syncInterval);
+  }, [isConnected]);
+
+  // Volume control
+  useEffect(() => {
+    if (playerRef.current) {
+      playerRef.current.setVolume(volume);
+      if (isMuted) {
+        playerRef.current.mute();
+      } else {
+        playerRef.current.unMute();
+      }
+    }
+  }, [volume, isMuted]);
+
+  const onPlayerReady = (event: YouTubeEvent) => {
+    playerRef.current = event.target;
+    playerRef.current.setVolume(volume);
+    if (isMuted) playerRef.current.mute();
+    
+    // Set initial position
+    if (expectedPositionRef.current > 0) {
+      playerRef.current.seekTo(expectedPositionRef.current, true);
+    }
+    if (isPlayingRef.current) {
+      playerRef.current.playVideo();
+    }
+  };
 
   const getSyncStatusColor = () => {
     switch (syncStatus) {
@@ -230,12 +279,21 @@ export default function JoinPage() {
               <div className="lg:col-span-2">
                 <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl">
                   <div className="aspect-video bg-black relative">
-                    <iframe
-                      ref={playerRef}
-                      src={`https://www.youtube.com/embed/${videoId}?autoplay=1`}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                      className="w-full h-full"
+                    <YouTube
+                      videoId={videoId}
+                      opts={{
+                        width: '100%',
+                        height: '100%',
+                        playerVars: {
+                          autoplay: 1,
+                          controls: 0,
+                          disablekb: 1,
+                          modestbranding: 1,
+                          rel: 0,
+                        },
+                      }}
+                      onReady={onPlayerReady}
+                      className="absolute inset-0 w-full h-full"
                     />
                     {/* Transparent overlay to prevent joiner interactions */}
                     <div className="absolute inset-0 bg-transparent pointer-events-auto cursor-not-allowed" />
@@ -387,7 +445,7 @@ export default function JoinPage() {
                   </div>
 
                   {error && (
-                    <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
+                     <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
                       ❌ {error}
                     </div>
                   )}

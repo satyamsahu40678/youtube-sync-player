@@ -5,7 +5,8 @@ import { io, Socket } from 'socket.io-client';
 import Link from 'next/link';
 import { Share2, Play, Pause, Copy, Check, AlertCircle, ArrowLeft, Radio } from 'lucide-react';
 import { NTPClockSync } from '@/lib/sync';
-import { extractYouTubeVideoId, isValidYouTubeUrl, buildYouTubeEmbedUrl, extractYouTubeStartTime } from '@/lib/youtube';
+import { extractYouTubeVideoId, isValidYouTubeUrl, extractYouTubeStartTime } from '@/lib/youtube';
+import YouTube, { YouTubeEvent, YouTubePlayer } from 'react-youtube';
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000';
 
@@ -24,11 +25,14 @@ export default function HostPage() {
   const [startTime, setStartTime] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
   const [participantCount, setParticipantCount] = useState(1);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
-  const playerRef = useRef<HTMLIFrameElement>(null);
+  
+  const playerRef = useRef<YouTubePlayer | null>(null);
   const clockSync = useRef(new NTPClockSync());
+  const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const userId = typeof window !== 'undefined' ? localStorage.getItem('userId') || `host-${Date.now()}` : `host-${Date.now()}`;
@@ -54,13 +58,6 @@ export default function HostPage() {
       setParticipantCount(data.count);
     });
 
-    socketInstance.on('room:state', (state: RoomState) => {
-      console.log('📡 Room state updated:', state);
-      if (state.videoId) {
-        setVideoId(state.videoId);
-      }
-    });
-
     socketInstance.on('disconnect', () => {
       console.log('❌ Disconnected from server');
     });
@@ -71,6 +68,42 @@ export default function HostPage() {
       socketInstance.disconnect();
     };
   }, []);
+
+  // Periodic host progress sync
+  useEffect(() => {
+    if (isPlaying && socket && playerRef.current) {
+      syncIntervalRef.current = setInterval(async () => {
+        try {
+          const currentProgress = await playerRef.current.getCurrentTime();
+          setProgress(currentProgress);
+          // Send periodic correction
+          socket.emit('room:seek', { roomId, progress: currentProgress });
+        } catch (e) {
+          // Ignore errors
+        }
+      }, 5000);
+    } else if (syncIntervalRef.current) {
+      clearInterval(syncIntervalRef.current);
+    }
+
+    return () => {
+      if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
+    };
+  }, [isPlaying, socket, roomId]);
+
+  // UI Progress bar updater
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isPlaying && playerRef.current) {
+      interval = setInterval(async () => {
+        try {
+          const t = await playerRef.current.getCurrentTime();
+          setProgress(t);
+        } catch (e) {}
+      }, 500);
+    }
+    return () => clearInterval(interval);
+  }, [isPlaying]);
 
   const handlePlayVideo = () => {
     setError('');
@@ -95,30 +128,71 @@ export default function HostPage() {
 
     setVideoId(extractedId);
     setStartTime(startTimeValue);
-    setProgress(0);
+    setProgress(startTimeValue || 0);
 
     if (socket) {
       socket.emit('room:update-video', { roomId, videoId: extractedId, startTime: startTimeValue || 0 });
+    }
+  };
+
+  const togglePlayPause = async () => {
+    if (!playerRef.current) return;
+    
+    const currentProgress = await playerRef.current.getCurrentTime();
+    if (isPlaying) {
+      playerRef.current.pauseVideo();
+      if (socket) {
+        socket.emit('room:playback-control', { roomId, status: 'PAUSED', progress: currentProgress });
+      }
+      setIsPlaying(false);
+    } else {
+      playerRef.current.playVideo();
+      if (socket) {
+        socket.emit('room:playback-control', { roomId, status: 'PLAYING', progress: currentProgress });
+      }
       setIsPlaying(true);
     }
   };
 
-  const togglePlayPause = () => {
+  const handleSeek = async (newProgress: number) => {
+    setProgress(newProgress);
+    if (playerRef.current) {
+      playerRef.current.seekTo(newProgress, true);
+    }
     if (socket) {
-      const newStatus = isPlaying ? 'PAUSED' : 'PLAYING';
-      socket.emit('room:playback-control', {
-        roomId,
-        status: newStatus,
-        progress,
-      });
-      setIsPlaying(!isPlaying);
+      socket.emit('room:seek', { roomId, progress: newProgress });
     }
   };
 
-  const handleSeek = (newProgress: number) => {
-    setProgress(newProgress);
+  const onPlayerReady = (event: YouTubeEvent) => {
+    playerRef.current = event.target;
+    setDuration(event.target.getDuration());
+    if (startTime) {
+      event.target.seekTo(startTime, true);
+    }
+    event.target.playVideo();
+    setIsPlaying(true);
+    
     if (socket) {
-      socket.emit('room:seek', { roomId, progress: newProgress });
+      socket.emit('room:playback-control', { roomId, status: 'PLAYING', progress: startTime || 0 });
+    }
+  };
+
+  const onPlayerStateChange = async (event: YouTubeEvent) => {
+    const state = event.data;
+    // 1 = PLAYING, 2 = PAUSED
+    if (state === 1 && !isPlaying) {
+      setIsPlaying(true);
+      if (socket) {
+        const t = await event.target.getCurrentTime();
+        socket.emit('room:playback-control', { roomId, status: 'PLAYING', progress: t });
+      }
+    } else if (state === 2 && isPlaying) {
+      setIsPlaying(false);
+      if (socket) {
+        const t = await event.target.getCurrentTime();
+        socket.emit('room:playback-control', { roomId, status: 'PAUSED', progress: t });
+      }
     }
   };
 
@@ -128,6 +202,9 @@ export default function HostPage() {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  // Calculate progress percentage
+  const progressPercent = duration > 0 ? (progress / duration) * 100 : 0;
 
   return (
     <div className="min-h-screen bg-[#0a0a12] text-white relative overflow-hidden">
@@ -165,12 +242,22 @@ export default function HostPage() {
                 <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl">
                   {videoId ? (
                     <div className="aspect-video bg-black relative">
-                      <iframe
-                        ref={playerRef}
-                        src={buildYouTubeEmbedUrl(videoId, startTime)}
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                        className="w-full h-full"
+                      <YouTube
+                        videoId={videoId}
+                        opts={{
+                          width: '100%',
+                          height: '100%',
+                          playerVars: {
+                            autoplay: 1,
+                            controls: 0, // hide native controls to prevent host confusion, we use custom
+                            disablekb: 1,
+                            modestbranding: 1,
+                            rel: 0,
+                          },
+                        }}
+                        onReady={onPlayerReady}
+                        onStateChange={onPlayerStateChange}
+                        className="absolute inset-0 w-full h-full"
                       />
                     </div>
                   ) : (
@@ -239,15 +326,15 @@ export default function HostPage() {
                           <input
                             type="range"
                             min="0"
-                            max="100"
+                            max={duration || 100}
                             value={progress}
                             onChange={(e) => handleSeek(parseFloat(e.target.value))}
                             className="flex-1 h-1.5 rounded-lg appearance-none cursor-pointer"
                             style={{
-                              background: `linear-gradient(to right, rgb(16, 185, 129) 0%, rgb(16, 185, 129) ${progress}%, rgba(255,255,255,0.06) ${progress}%, rgba(255,255,255,0.06) 100%)`,
+                              background: `linear-gradient(to right, rgb(16, 185, 129) 0%, rgb(16, 185, 129) ${progressPercent}%, rgba(255,255,255,0.06) ${progressPercent}%, rgba(255,255,255,0.06) 100%)`,
                             }}
                           />
-                          <span className="text-xs text-gray-500 min-w-fit font-mono">{Math.round(progress)}%</span>
+                          <span className="text-xs text-gray-500 min-w-fit font-mono">{Math.floor(progress / 60)}:{(Math.floor(progress % 60)).toString().padStart(2, '0')}</span>
                         </div>
                       </div>
                     )}
@@ -343,3 +430,4 @@ export default function HostPage() {
     </div>
   );
 }
+
