@@ -20,6 +20,7 @@ import YouTube, { YouTubeEvent, YouTubePlayer } from "react-youtube";
 
 import VideoPlayer from "@/components/VideoPlayer";
 import AudioPlayer from "@/components/AudioPlayer";
+import SimulatedSpectrum from "@/components/SimulatedSpectrum";
 
 const SERVER_URL =
   process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
@@ -398,8 +399,11 @@ export default function JoinPage() {
                 <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl relative">
                   {isAudioMode ? (
                     // AUDIO MODE UI
-                    <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center p-8">
-                      <div className="w-32 h-32 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-6 relative">
+                    <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center p-8 relative">
+                      <div className="absolute bottom-8 left-0 right-0 z-0 opacity-50">
+                        <SimulatedSpectrum isPlaying={isPlayingRef.current} />
+                      </div>
+                      <div className="w-32 h-32 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-6 relative z-10">
                         {isPlayingRef.current && (
                           <div
                             className="absolute inset-0 rounded-full border border-blue-400/30 animate-ping"
@@ -458,7 +462,7 @@ export default function JoinPage() {
                             height: "100%",
                             playerVars: {
                               autoplay: 0,
-                              controls: 0,
+                              controls: 1,
                               disablekb: 1,
                               modestbranding: 1,
                               rel: 0,
@@ -503,13 +507,25 @@ export default function JoinPage() {
                   ) : (
                     <div className="aspect-video bg-black relative">
                       {roomState?.hlsStatus === "ready" && roomState?.hlsUrl ? (
-                        <VideoPlayer
-                          roomId={roomId}
-                          hlsUrl={roomState.hlsUrl}
-                          socket={socket}
-                          isHost={false}
-                          serverNow={() => clockSync.current.getServerTime()}
-                        />
+                        roomState.fileType === "audio" ? (
+                          <div className="flex items-center justify-center w-full h-full p-4">
+                            <AudioPlayer
+                              roomId={roomId}
+                              hlsUrl={roomState.hlsUrl}
+                              socket={socket}
+                              isHost={false}
+                              serverNow={() => clockSync.current.getServerTime()}
+                            />
+                          </div>
+                        ) : (
+                          <VideoPlayer
+                            roomId={roomId}
+                            hlsUrl={roomState.hlsUrl}
+                            socket={socket}
+                            isHost={false}
+                            serverNow={() => clockSync.current.getServerTime()}
+                          />
+                        )
                       ) : (
                         <div className="w-full h-full flex flex-col items-center justify-center text-gray-500">
                           <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin mb-4" />

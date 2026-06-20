@@ -7,6 +7,7 @@ import { useSyncEngine } from "@/hooks/useSyncEngine";
 import { SyncStatus } from "@/lib/types";
 import SyncIndicator from "./SyncIndicator";
 import QualityBadge from "./QualityBadge";
+import SimulatedSpectrum from "./SimulatedSpectrum";
 
 interface AudioPlayerProps {
   roomId: string;
@@ -31,6 +32,8 @@ export default function AudioPlayer({
   const [currentQuality, setCurrentQuality] = useState("Auto");
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("synced");
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isWebAudioActive, setIsWebAudioActive] = useState(false);
+  const isWebAudioActiveRef = useRef(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
 
@@ -103,6 +106,15 @@ export default function AudioPlayer({
           animFrameRef.current = requestAnimationFrame(draw);
           analyser.getByteFrequencyData(dataArray);
 
+          let sum = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            sum += dataArray[i];
+          }
+          if (sum > 0 && !isWebAudioActiveRef.current) {
+            isWebAudioActiveRef.current = true;
+            setIsWebAudioActive(true);
+          }
+
           canvasCtx.fillStyle = "rgba(10, 10, 18, 0.85)";
           canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -148,6 +160,9 @@ export default function AudioPlayer({
     // Initialize on first play
     const onPlay = () => {
       initVisualizer();
+      if (audioCtx && audioCtx.state === "suspended") {
+        audioCtx.resume().catch(() => {});
+      }
       setIsPlaying(true);
     };
     const onPause = () => setIsPlaying(false);
@@ -207,8 +222,14 @@ export default function AudioPlayer({
           ref={canvasRef}
           width={800}
           height={160}
-          className="w-full h-40 rounded-t-2xl"
+          className={`w-full h-40 rounded-t-2xl ${(!isWebAudioActive && isPlaying) ? 'hidden' : ''}`}
         />
+
+        {(!isWebAudioActive && isPlaying) && (
+          <div className="absolute inset-0 flex items-end overflow-hidden pb-4">
+            <SimulatedSpectrum isPlaying={isPlaying} />
+          </div>
+        )}
 
         {/* Overlay gradient */}
         <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a12] via-transparent to-transparent pointer-events-none" />

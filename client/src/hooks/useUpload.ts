@@ -21,7 +21,8 @@ export function useUpload() {
     setError(null);
 
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-    const fileType = file.type.startsWith("video/") ? "video" : "audio";
+    const isVideo = file.type.startsWith("video/") || file.name.match(/\.(mp4|mkv|webm|avi|mov|flv|wmv|m4v)$/i);
+    const fileType = isVideo ? "video" : "audio";
 
     try {
       for (let i = 0; i < totalChunks; i++) {

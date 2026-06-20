@@ -86,3 +86,8 @@ input[type="range"]::-moz-range-thumb {
   outline: 2px solid rgba(139, 92, 246, 0.5);
   outline-offset: 2px;
 }
+
+@keyframes spectrum-bounce {
+  0% { transform: scaleY(0.3); }
+  100% { transform: scaleY(1.0); }
+}

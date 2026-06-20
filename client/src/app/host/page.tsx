@@ -27,6 +27,7 @@ import YouTube, { YouTubeEvent, YouTubePlayer } from "react-youtube";
 import VideoPlayer from "@/components/VideoPlayer";
 import AudioPlayer from "@/components/AudioPlayer";
 import UploadProgress from "@/components/UploadProgress";
+import SimulatedSpectrum from "@/components/SimulatedSpectrum";
 import { useUpload } from "@/hooks/useUpload";
 
 const SERVER_URL =
@@ -64,6 +65,7 @@ export default function HostPage() {
   const [error, setError] = useState("");
   const [volume, setVolume] = useState(100);
   const [isMuted, setIsMuted] = useState(false);
+  const [isAudioMode, setIsAudioMode] = useState(false);
 
   // HLS/Upload State
   const [mode, setMode] = useState<"youtube" | "file">("youtube");
@@ -440,28 +442,74 @@ export default function HostPage() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* Main Player Area */}
               <div className="lg:col-span-2">
-                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl">
+                <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl relative">
+                  {/* YouTube Mode */}
                   {mode === "youtube" ? (
                     videoId ? (
-                      <div className="aspect-video bg-black relative">
-                        <YouTube
-                          videoId={videoId}
-                          opts={{
-                            width: "100%",
-                            height: "100%",
-                            playerVars: {
-                              autoplay: 1,
-                              controls: 0,
-                              disablekb: 1,
-                              modestbranding: 1,
-                              rel: 0,
-                            },
-                          }}
-                          onReady={onPlayerReady}
-                          onStateChange={onPlayerStateChange}
-                          className="absolute inset-0 w-full h-full"
-                        />
-                      </div>
+                      isAudioMode ? (
+                        <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center p-8 relative">
+                          <div className="absolute bottom-8 left-0 right-0 z-0 opacity-50">
+                            <SimulatedSpectrum isPlaying={isPlaying} />
+                          </div>
+                          <div className="w-32 h-32 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-6 relative z-10">
+                            {isPlaying && (
+                              <div
+                                className="absolute inset-0 rounded-full border border-emerald-400/30 animate-ping"
+                                style={{ animationDuration: "3s" }}
+                              />
+                            )}
+                            <Radio
+                              size={48}
+                              className={
+                                isPlaying
+                                  ? "text-emerald-400"
+                                  : "text-gray-600"
+                              }
+                            />
+                          </div>
+                          <h3 className="text-xl font-bold text-gray-200 mb-2">
+                            {videoTitle || "Audio Mode Active"}
+                          </h3>
+                          <p className="text-gray-500 text-sm mb-8 text-center max-w-md">
+                            Video playback is hidden.
+                          </p>
+                          <div className="hidden">
+                            <YouTube
+                              videoId={videoId}
+                              opts={{
+                                width: "100",
+                                height: "100",
+                                playerVars: {
+                                  autoplay: 1,
+                                  controls: 0,
+                                },
+                              }}
+                              onReady={onPlayerReady}
+                              onStateChange={onPlayerStateChange}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="aspect-video bg-black relative">
+                          <YouTube
+                            videoId={videoId}
+                            opts={{
+                              width: "100%",
+                              height: "100%",
+                              playerVars: {
+                                autoplay: 1,
+                                controls: 1,
+                                disablekb: 1,
+                                modestbranding: 1,
+                                rel: 0,
+                              },
+                            }}
+                            onReady={onPlayerReady}
+                            onStateChange={onPlayerStateChange}
+                            className="absolute inset-0 w-full h-full"
+                          />
+                        </div>
+                      )
                     ) : (
                       <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center">
                         <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-4">
@@ -620,6 +668,23 @@ export default function HostPage() {
                             </span>
                           </div>
                         )}
+                      </div>
+                    )}
+
+                    {mode === "youtube" && (
+                      <div className="mt-4 pt-4 border-t border-white/[0.06] flex items-center gap-4">
+                        <span className="text-sm text-gray-400">View Mode:</span>
+                        <button
+                          onClick={() => setIsAudioMode(!isAudioMode)}
+                          className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center gap-2 ${
+                            isAudioMode
+                              ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                              : "bg-white/[0.05] text-gray-400 border border-white/[0.05] hover:bg-white/[0.1]"
+                          }`}
+                        >
+                          {isAudioMode ? <Radio size={16} /> : <Play size={16} />}
+                          {isAudioMode ? "Audio Only" : "Video"}
+                        </button>
                       </div>
                     )}
                   </div>

@@ -239,7 +239,38 @@ io.on("connection", (socket) => {
       socket.to(data.roomId).volatile.emit("sync:heartbeat", {
         progress,
         serverTime: Date.now(),
+        currentTime: progress, // send both for backwards compat
       });
+    }
+  });
+
+  // Uploaded file playback sync
+  socket.on("sync:play", (data: { roomId: string; currentTime: number; serverTime: number }) => {
+    const roomState = roomStates.get(data.roomId);
+    if (roomState) {
+      roomState.status = "PLAYING";
+      roomState.videoProgress = data.currentTime;
+      roomState.serverTimeUpdatedAt = Date.now();
+      socket.to(data.roomId).emit("sync:play", data);
+    }
+  });
+
+  socket.on("sync:pause", (data: { roomId: string; currentTime: number }) => {
+    const roomState = roomStates.get(data.roomId);
+    if (roomState) {
+      roomState.status = "PAUSED";
+      roomState.videoProgress = data.currentTime;
+      roomState.serverTimeUpdatedAt = Date.now();
+      socket.to(data.roomId).emit("sync:pause", data);
+    }
+  });
+
+  socket.on("sync:seek", (data: { roomId: string; currentTime: number; serverTime: number }) => {
+    const roomState = roomStates.get(data.roomId);
+    if (roomState) {
+      roomState.videoProgress = data.currentTime;
+      roomState.serverTimeUpdatedAt = Date.now();
+      socket.to(data.roomId).emit("sync:seek", data);
     }
   });
 
