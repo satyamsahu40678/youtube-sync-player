@@ -321,6 +321,7 @@ app.delete("/history/hosted/:roomId", async (req: Request, res: Response) => {
     }
     
     await prisma.room.delete({ where: { id: roomId } });
+    roomStates.delete(roomId);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: "Failed to delete room" });

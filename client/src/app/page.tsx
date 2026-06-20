@@ -10,6 +10,7 @@ const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:4000'
 interface ActiveRoom {
   id: string;
   title: string;
+  hostId?: string;
   hostName: string;
   participantCount: number;
 }
@@ -31,15 +32,19 @@ export default function Home() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
   useEffect(() => {
-    setUser(authService.getCurrentUser());
+    const currentUser = authService.getCurrentUser();
+    setUser(currentUser);
     fetchActiveRooms();
-  }, []);
-
-  useEffect(() => {
-    if (user) {
-      fetchHistory(user.id);
+    
+    if (currentUser) {
+      fetchHistory(currentUser.id);
+    } else if (typeof window !== 'undefined') {
+      const guestId = localStorage.getItem('guest_id');
+      if (guestId) {
+        fetchHistory(guestId);
+      }
     }
-  }, [user]);
+  }, []);
 
   const fetchActiveRooms = async () => {
     try {
@@ -70,9 +75,10 @@ export default function Home() {
   };
 
   const handleDeleteHistory = async (roomId: string, type: 'hosted' | 'joined') => {
-    if (!user) return;
+    const userId = user?.id || (typeof window !== 'undefined' ? localStorage.getItem('guest_id') : null);
+    if (!userId) return;
     try {
-      const res = await fetch(`${SERVER_URL}/history/${type}/${roomId}?userId=${user.id}`, {
+      const res = await fetch(`${SERVER_URL}/history/${type}/${roomId}?userId=${userId}`, {
         method: 'DELETE',
       });
       if (res.ok) {
@@ -408,25 +414,44 @@ export default function Home() {
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {activeRooms.map((room) => (
-                        <Link href={`/join?roomId=${room.id}`} key={room.id}>
-                          <div className="group block p-3 bg-white/[0.02] border border-white/[0.04] rounded-xl hover:bg-white/[0.06] hover:border-emerald-500/30 transition-all duration-200">
-                            <div className="flex justify-between items-start mb-1.5">
-                              <h4 className="font-bold text-sm text-gray-200 group-hover:text-emerald-400 transition-colors truncate pr-2">
-                                {room.title}
-                              </h4>
-                              <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded shrink-0">
-                                <Users size={10} />
-                                {room.participantCount}
-                              </span>
-                            </div>
-                            <p className="text-xs text-gray-500 flex items-center gap-1.5 truncate">
-                              <Radio size={12} className="text-violet-400" />
-                              <span className="truncate">{room.hostName}</span>
-                            </p>
+                      {activeRooms.map((room) => {
+                        const currentUserId = user?.id || (typeof window !== 'undefined' ? localStorage.getItem('guest_id') : null);
+                        const isHost = currentUserId === room.hostId;
+                        return (
+                          <div key={room.id} className="relative group flex items-stretch gap-2">
+                            <Link href={`/join?roomId=${room.id}`} className="flex-1 min-w-0">
+                              <div className="block p-3 h-full bg-white/[0.02] border border-white/[0.04] rounded-xl hover:bg-white/[0.06] hover:border-emerald-500/30 transition-all duration-200">
+                                <div className="flex justify-between items-start mb-1.5">
+                                  <h4 className="font-bold text-sm text-gray-200 group-hover:text-emerald-400 transition-colors truncate pr-2">
+                                    {room.title}
+                                  </h4>
+                                  <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded shrink-0">
+                                    <Users size={10} />
+                                    {room.participantCount}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-gray-500 flex items-center gap-1.5 truncate">
+                                  <Radio size={12} className="text-violet-400 shrink-0" />
+                                  <span className="truncate">{room.hostName}</span>
+                                </p>
+                              </div>
+                            </Link>
+                            {isHost && (
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  handleDeleteHistory(room.id, 'hosted');
+                                  setActiveRooms(prev => prev.filter(r => r.id !== room.id));
+                                }}
+                                className="px-3 bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 hover:text-red-300 rounded-xl flex items-center justify-center transition-all opacity-0 group-hover:opacity-100 shrink-0"
+                                title="Delete Room"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            )}
                           </div>
-                        </Link>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

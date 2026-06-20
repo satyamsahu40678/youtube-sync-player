@@ -48,16 +48,26 @@ export default function HostPage() {
       }
     }
 
-    const userId = typeof window !== 'undefined' ? localStorage.getItem('userId') || `host-${Date.now()}` : `host-${Date.now()}`;
-    const userStr = typeof window !== 'undefined' ? localStorage.getItem('auth_user') : null;
+    let userId = `host-${Date.now()}`;
     let userName = '';
     let userEmail = '';
-    if (userStr) {
-      try {
-        const user = JSON.parse(userStr);
-        userName = user.name || '';
-        userEmail = user.email || '';
-      } catch (e) {}
+    if (typeof window !== 'undefined') {
+      const userStr = localStorage.getItem('auth_user');
+      if (userStr) {
+        try {
+          const user = JSON.parse(userStr);
+          userId = user.id;
+          userName = user.name || '';
+          userEmail = user.email || '';
+        } catch (e) {}
+      } else {
+        const storedGuestId = localStorage.getItem('guest_id');
+        if (storedGuestId) {
+          userId = storedGuestId;
+        } else {
+          localStorage.setItem('guest_id', userId);
+        }
+      }
     }
 
     const socketInstance = io(SERVER_URL, {

@@ -1,0 +1,11 @@
+node_modules
+client/node_modules
+server/node_modules
+client/.next
+server/dist
+server/prisma/*.db
+server/prisma/*.db-journal
+.git
+.env
+client/.env.local
+.DS_Store

@@ -110,16 +110,26 @@ export default function JoinPage() {
       setIsConnected(true);
       setSyncStatus('SYNCED');
 
-      const userId = typeof window !== 'undefined' ? localStorage.getItem('userId') || `joiner-${Date.now()}` : `joiner-${Date.now()}`;
-      const userStr = typeof window !== 'undefined' ? localStorage.getItem('auth_user') : null;
+      let userId = `joiner-${Date.now()}`;
       let userName = '';
       let userEmail = '';
-      if (userStr) {
-        try {
-          const user = JSON.parse(userStr);
-          userName = user.name || '';
-          userEmail = user.email || '';
-        } catch (e) {}
+      if (typeof window !== 'undefined') {
+        const userStr = localStorage.getItem('auth_user');
+        if (userStr) {
+          try {
+            const user = JSON.parse(userStr);
+            userId = user.id;
+            userName = user.name || '';
+            userEmail = user.email || '';
+          } catch (e) {}
+        } else {
+          const storedGuestId = localStorage.getItem('guest_id');
+          if (storedGuestId) {
+            userId = storedGuestId;
+          } else {
+            localStorage.setItem('guest_id', userId);
+          }
+        }
       }
 
       socketInstance.emit('room:join', { 
