@@ -45,6 +45,7 @@ echo -e "${BLUE}[3] Testing Room Creation...${NC}"
 ROOM_RESPONSE=$(curl -s -X POST http://localhost:4000/rooms/create \
   -H "Content-Type: application/json" \
   -d '{
+    "roomId": "test-room-'$(date +%s)'",
     "hostId": "test-user-123",
     "title": "Test Stream"
   }')

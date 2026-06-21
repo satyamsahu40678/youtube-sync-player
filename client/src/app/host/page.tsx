@@ -27,7 +27,7 @@ import YouTube, { YouTubeEvent, YouTubePlayer } from "react-youtube";
 import VideoPlayer from "@/components/VideoPlayer";
 import AudioPlayer from "@/components/AudioPlayer";
 import UploadProgress from "@/components/UploadProgress";
-import SimulatedSpectrum from "@/components/SimulatedSpectrum";
+import AudioSpectrum from "@/components/AudioSpectrum";
 import { useUpload } from "@/hooks/useUpload";
 
 const SERVER_URL =
@@ -83,6 +83,26 @@ export default function HostPage() {
   const playerRef = useRef<YouTubePlayer | null>(null);
   const clockSync = useRef(new NTPClockSync());
   const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Use refs for values that should not trigger useEffect re-runs
+  const progressRef = useRef(0);
+  const isPlayingRef = useRef(false);
+  const modeRef = useRef<"youtube" | "file">("youtube");
+  const roomIdRef = useRef("");
+  const audioModeRef = useRef<HTMLAudioElement>(null);
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    progressRef.current = progress;
+  }, [progress]);
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+  useEffect(() => {
+    roomIdRef.current = roomId;
+  }, [roomId]);
 
   useEffect(() => {
     let initialRoomId = "";
@@ -117,6 +137,7 @@ export default function HostPage() {
     }
 
     const socketInstance = io(SERVER_URL, {
+      transports: ["websocket", "polling"],
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
@@ -127,7 +148,7 @@ export default function HostPage() {
       console.log("✅ Connected to server");
 
       await clockSync.current.calibrate(socketInstance);
-      clockSync.current.startPeriodicSync(socketInstance); // Auto re-sync
+      clockSync.current.startPeriodicSync(socketInstance, 10000);
 
       const finalRoomId = initialRoomId || `room-${Date.now()}`;
       setRoomId(finalRoomId);
@@ -170,7 +191,6 @@ export default function HostPage() {
     socketInstance.on(
       "stream:ready",
       (data: { hlsUrl: string; fileType: "video" | "audio" }) => {
-        // Room state will also update shortly, but we can set mode immediately
         setMode("file");
       },
     );
@@ -182,34 +202,39 @@ export default function HostPage() {
     setSocket(socketInstance);
 
     return () => {
+      clockSync.current.stopPeriodicSync();
       socketInstance.disconnect();
     };
   }, []);
 
-  // Periodic host progress sync - 1 SECOND HEARTBEAT (Zero-latency fix)
+  // Periodic host progress sync — 500ms heartbeat
+  // FIXED: Uses refs instead of state to prevent interval recreation
   useEffect(() => {
-    if (isPlaying && socket) {
-      syncIntervalRef.current = setInterval(async () => {
-        try {
-          let currentProgress = progress;
-          if (mode === "youtube" && playerRef.current) {
-            currentProgress = await playerRef.current.getCurrentTime();
-            setProgress(currentProgress);
-          }
-          // Zero-latency volatile heartbeat
-          socket.emit("sync:heartbeat", { roomId, progress: currentProgress });
-        } catch (e) {
-          // Ignore errors
+    if (!socket) return;
+
+    syncIntervalRef.current = setInterval(async () => {
+      if (!isPlayingRef.current) return;
+
+      try {
+        let currentProgress = progressRef.current;
+        if (modeRef.current === "youtube" && playerRef.current) {
+          currentProgress = await playerRef.current.getCurrentTime();
+          setProgress(currentProgress);
         }
-      }, 1000); // 1 second
-    } else if (syncIntervalRef.current) {
-      clearInterval(syncIntervalRef.current);
-    }
+        // Volatile heartbeat
+        socket.emit("sync:heartbeat", {
+          roomId: roomIdRef.current,
+          progress: currentProgress,
+        });
+      } catch (e) {
+        // Ignore errors
+      }
+    }, 500); // 500ms for lower latency (was 1000ms)
 
     return () => {
       if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
     };
-  }, [isPlaying, socket, roomId, mode, progress]);
+  }, [socket]); // Only depends on socket — refs handle the rest
 
   // UI Progress bar updater for YouTube
   useEffect(() => {
@@ -443,13 +468,17 @@ export default function HostPage() {
               {/* Main Player Area */}
               <div className="lg:col-span-2">
                 <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl relative">
-                  {/* YouTube Mode */}
-                  {mode === "youtube" ? (
-                    videoId ? (
-                      isAudioMode ? (
+                  {isAudioMode ? (
                         <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center p-8 relative">
-                          <div className="absolute bottom-8 left-0 right-0 z-0 opacity-50">
-                            <SimulatedSpectrum isPlaying={isPlaying} />
+                          {/* Real audio spectrum */}
+                          <div className="absolute bottom-0 left-0 right-0 z-0 opacity-60 px-4">
+                            <AudioSpectrum
+                              mediaRef={audioModeRef}
+                              isPlaying={isPlaying}
+                              height={120}
+                              barCount={48}
+                              colorTheme="emerald"
+                            />
                           </div>
                           <div className="w-32 h-32 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-6 relative z-10">
                             {isPlaying && (
@@ -467,29 +496,42 @@ export default function HostPage() {
                               }
                             />
                           </div>
-                          <h3 className="text-xl font-bold text-gray-200 mb-2">
+                          <h3 className="text-xl font-bold text-gray-200 mb-2 relative z-10">
                             {videoTitle || "Audio Mode Active"}
                           </h3>
-                          <p className="text-gray-500 text-sm mb-8 text-center max-w-md">
+                          <p className="text-gray-500 text-sm mb-8 text-center max-w-md relative z-10">
                             Video playback is hidden.
                           </p>
                           <div className="hidden">
-                            <YouTube
-                              videoId={videoId}
-                              opts={{
-                                width: "100",
-                                height: "100",
-                                playerVars: {
-                                  autoplay: 1,
-                                  controls: 0,
-                                },
-                              }}
-                              onReady={onPlayerReady}
-                              onStateChange={onPlayerStateChange}
-                            />
+                            {mode === "youtube" ? (
+                              <YouTube
+                                videoId={videoId}
+                                opts={{
+                                  width: "100",
+                                  height: "100",
+                                  playerVars: {
+                                    autoplay: 1,
+                                    controls: 0,
+                                  },
+                                }}
+                                onReady={onPlayerReady}
+                                onStateChange={onPlayerStateChange}
+                              />
+                            ) : roomState?.hlsStatus === "ready" && roomState?.hlsUrl ? (
+                              <AudioPlayer
+                                roomId={roomId}
+                                hlsUrl={roomState.hlsUrl}
+                                socket={socket}
+                                isHost={true}
+                                serverNow={() => clockSync.current.getServerTime()}
+                                externalAudioRef={audioModeRef}
+                                hideUI={true}
+                              />
+                            ) : null}
                           </div>
                         </div>
-                      ) : (
+                  ) : mode === "youtube" ? (
+                    videoId ? (
                         <div className="aspect-video bg-black relative">
                           <YouTube
                             videoId={videoId}
@@ -499,9 +541,11 @@ export default function HostPage() {
                               playerVars: {
                                 autoplay: 1,
                                 controls: 1,
-                                disablekb: 1,
                                 modestbranding: 1,
                                 rel: 0,
+                                cc_load_policy: 1,
+                                playsinline: 1,
+                                // Removed disablekb — allow keyboard shortcuts
                               },
                             }}
                             onReady={onPlayerReady}
@@ -509,9 +553,8 @@ export default function HostPage() {
                             className="absolute inset-0 w-full h-full"
                           />
                         </div>
-                      )
-                    ) : (
-                      <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center">
+                      ) : (
+                        <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center">
                         <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-4">
                           <Play size={28} className="text-gray-600" />
                         </div>
@@ -671,7 +714,7 @@ export default function HostPage() {
                       </div>
                     )}
 
-                    {mode === "youtube" && (
+                    {(mode === "youtube" || roomState?.hlsStatus === "ready") && (
                       <div className="mt-4 pt-4 border-t border-white/[0.06] flex items-center gap-4">
                         <span className="text-sm text-gray-400">View Mode:</span>
                         <button

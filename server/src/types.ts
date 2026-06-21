@@ -32,6 +32,12 @@ export interface RoomStateMessage {
   status: "PLAYING" | "PAUSED";
   videoProgress: number;
   serverTimeUpdatedAt: number;
+
+  // HLS fields (sent when file upload mode is active)
+  hlsStatus?: "waiting" | "uploading" | "transcoding" | "ready" | "error";
+  fileType?: "video" | "audio" | null;
+  hlsUrl?: string | null;
+  fileName?: string | null;
 }
 
 export interface ChunkUploadBody {

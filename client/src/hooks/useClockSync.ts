@@ -7,6 +7,7 @@ import { NTPClockSync } from "@/lib/sync";
 /**
  * React hook wrapping NTPClockSync.
  * Auto-syncs on connect, re-syncs periodically.
+ * Properly cleans up intervals on unmount to prevent memory leaks.
  */
 export function useClockSync(socket: Socket | null) {
   const clockRef = useRef(new NTPClockSync());
@@ -22,13 +23,12 @@ export function useClockSync(socket: Socket | null) {
     clock.calibrate(socket).then(() => {
       setClockOffset(clock.getMetrics().clockOffset);
       setSyncReady(true);
-      clock.startPeriodicSync(socket);
+      clock.startPeriodicSync(socket, 10000); // Re-sync every 10s
     });
 
     return () => {
-      // The class internal interval is cleared via a different mechanism if needed
-      // Currently startPeriodicSync sets an interval on window that isn't cleared here,
-      // but typically the socket disconnecting cleans things up, or we can just let it be.
+      // CRITICAL: Stop periodic sync to prevent memory leak from stacking intervals
+      clock.stopPeriodicSync();
     };
   }, [socket, socket?.connected]);
 

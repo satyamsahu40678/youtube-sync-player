@@ -55,35 +55,72 @@ router.post("/chunk", upload.single("chunk"), async (req, res) => {
     const currentIndex = parseInt(chunkIndex);
     const total = parseInt(totalChunks);
 
-    res.json({ success: true, received: currentIndex });
-
     // Update room status
-    const redis = getRedis();
-    const raw = await redis.hget("rooms", roomId);
-    if (raw) {
-      const room = JSON.parse(raw);
-      room.hlsStatus = "uploading";
-      room.fileName = fileName;
-      room.fileType = fileType as "video" | "audio";
-      await redis.hset("rooms", roomId, JSON.stringify(room));
-    }
-
     const { getOrCreateRoomState } = require("../state");
     const roomState = getOrCreateRoomState(roomId);
     roomState.hlsStatus = "uploading";
     roomState.fileName = fileName;
     roomState.fileType = fileType as "video" | "audio";
 
-    // If this is the last chunk, assemble and transcode
+    // Update Redis in background (don't block response)
+    const redis = getRedis();
+    redis
+      .hget("rooms", roomId)
+      .then((raw) => {
+        if (raw) {
+          const room = JSON.parse(raw);
+          room.hlsStatus = "uploading";
+          room.fileName = fileName;
+          room.fileType = fileType as "video" | "audio";
+          return redis.hset("rooms", roomId, JSON.stringify(room));
+        }
+      })
+      .catch((err) => console.error("[UPLOAD] Redis update error:", err));
+
+    // If this is the last chunk, assemble and transcode BEFORE responding
     if (currentIndex === total - 1) {
-      // Wait briefly for all chunks to flush to disk
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      await assembleAndQueue(
-        roomId,
-        total,
-        fileName,
-        fileType as "video" | "audio",
-      );
+      try {
+        // Verify all chunks exist before assembly
+        const chunksDir = path.resolve(
+          __dirname,
+          `../../../uploads/chunks/${roomId}`,
+        );
+        const missingChunks: number[] = [];
+        for (let i = 0; i < total; i++) {
+          const chunkPath = path.join(chunksDir, `chunk_${i}`);
+          if (!fs.existsSync(chunkPath)) {
+            missingChunks.push(i);
+          }
+        }
+
+        if (missingChunks.length > 0) {
+          console.error(
+            `[UPLOAD] Missing chunks for room ${roomId}: ${missingChunks.join(", ")}`,
+          );
+          return res.status(400).json({
+            error: `Missing chunks: ${missingChunks.join(", ")}`,
+            success: false,
+          });
+        }
+
+        // All chunks present — respond success, then assemble in background
+        res.json({ success: true, received: currentIndex, complete: true });
+
+        // Assembly and transcoding happen after response
+        await assembleAndQueue(
+          roomId,
+          total,
+          fileName,
+          fileType as "video" | "audio",
+        );
+      } catch (assemblyErr) {
+        console.error("[UPLOAD] Assembly failed:", assemblyErr);
+        // Response already sent, notify via socket
+        roomState.hlsStatus = "error";
+      }
+    } else {
+      // Intermediate chunk — respond immediately
+      res.json({ success: true, received: currentIndex });
     }
   } catch (err) {
     console.error("[UPLOAD] Error processing chunk:", err);
@@ -123,6 +160,12 @@ async function assembleAndQueue(
     writeStream.on("error", reject);
   });
 
+  // Verify assembled file exists and has content
+  const stats = fs.statSync(outputPath);
+  if (stats.size === 0) {
+    throw new Error("Assembled file is empty");
+  }
+
   // Clean up chunk files
   try {
     fs.rmSync(chunksDir, { recursive: true });
@@ -130,7 +173,9 @@ async function assembleAndQueue(
     // ignore
   }
 
-  console.log(`[UPLOAD] Assembled ${totalChunks} chunks → ${outputPath}`);
+  console.log(
+    `[UPLOAD] Assembled ${totalChunks} chunks → ${outputPath} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`,
+  );
 
   // Queue transcoding job
   await transcodingQueue.add("transcode", {

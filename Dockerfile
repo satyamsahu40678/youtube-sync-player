@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM node:20-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ RUN cd server && npm install
 COPY . .
 
 # Install ffmpeg for HLS transcoding
-RUN apk add --no-cache ffmpeg
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 # Build server
 RUN cd server && npm run build
@@ -25,12 +25,12 @@ ENV NEXT_PUBLIC_SERVER_URL=$NEXT_PUBLIC_SERVER_URL
 RUN cd client && npm run build
 
 # Production image
-FROM node:20-alpine
+FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-# Install bash, procps and ffmpeg for start-prod.sh and transcoding
-RUN apk add --no-cache bash procps ffmpeg
+# Install procps and ffmpeg for start-prod.sh and transcoding
+RUN apt-get update && apt-get install -y procps ffmpeg && rm -rf /var/lib/apt/lists/*
 
 # Copy package files
 COPY --from=build /app/client/package*.json ./client/

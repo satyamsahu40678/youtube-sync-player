@@ -18,6 +18,11 @@ interface UseSyncEngineOptions {
  * Core sync engine hook.
  * HOST mode: captures play/pause/seek events from the media element and emits them via Socket.io.
  * VIEWER mode: receives sync events and applies them to the media element with drift correction.
+ *
+ * Improvements:
+ * - Jitter buffer: averages 2-3 heartbeats before adjusting
+ * - Adaptive hard-seek threshold based on RTT
+ * - No more setTimeout-based rate reset (PID controller handles it)
  */
 export function useSyncEngine({
   roomId,
@@ -29,6 +34,7 @@ export function useSyncEngine({
 }: UseSyncEngineOptions) {
   const rateControllerRef = useRef(new PlaybackRateController());
   const isSyncingRef = useRef(false); // Guard to prevent echo loops
+  const heartbeatBufferRef = useRef<number[]>([]); // Jitter buffer for drift samples
 
   // ─── HOST MODE ──────────────────────────────────────────────────
   useEffect(() => {
@@ -61,7 +67,7 @@ export function useSyncEngine({
       });
     };
 
-    // Heartbeat: broadcast position every 2 seconds
+    // Heartbeat: broadcast position every 500ms (was 2000ms — faster = lower latency)
     const heartbeat = setInterval(() => {
       if (!media.paused && !media.ended) {
         socket.emit("sync:heartbeat", {
@@ -69,7 +75,7 @@ export function useSyncEngine({
           currentTime: media.currentTime,
         });
       }
-    }, 2000);
+    }, 500);
 
     media.addEventListener("play", onPlay);
     media.addEventListener("pause", onPause);
@@ -81,7 +87,7 @@ export function useSyncEngine({
       media.removeEventListener("seeked", onSeeked);
       clearInterval(heartbeat);
     };
-  }, [isHost, socket, serverNow, mediaRef]);
+  }, [isHost, socket, serverNow, mediaRef, roomId]);
 
   // ─── VIEWER MODE ────────────────────────────────────────────────
   useEffect(() => {
@@ -92,10 +98,10 @@ export function useSyncEngine({
     const handlePlay = (data: MediaState) => {
       isSyncingRef.current = true;
       const elapsed = (serverNow() - data.serverTime) / 1000;
-      const targetTime = data.currentTime + elapsed;
+      const targetTime = data.currentTime + Math.max(0, elapsed);
       media.currentTime = targetTime;
       media.play().catch(() => {});
-      // rateCtrl.reset(); (not needed in new API)
+      rateCtrl.reset();
       onSyncStatusChange?.("synced");
       isSyncingRef.current = false;
     };
@@ -104,7 +110,7 @@ export function useSyncEngine({
       isSyncingRef.current = true;
       media.currentTime = data.currentTime;
       media.pause();
-      // rateCtrl.reset();
+      rateCtrl.reset();
       onSyncStatusChange?.("synced");
       isSyncingRef.current = false;
     };
@@ -112,8 +118,8 @@ export function useSyncEngine({
     const handleSeek = (data: MediaState) => {
       isSyncingRef.current = true;
       const elapsed = (serverNow() - data.serverTime) / 1000;
-      media.currentTime = data.currentTime + elapsed;
-      // rateCtrl.reset();
+      media.currentTime = data.currentTime + Math.max(0, elapsed);
+      rateCtrl.reset();
       onSyncStatusChange?.("synced");
       isSyncingRef.current = false;
     };
@@ -124,32 +130,37 @@ export function useSyncEngine({
     }) => {
       if (media.paused) return;
 
-      const elapsed = (serverNow() - data.serverTime) / 1000;
+      const elapsed = Math.max(0, (serverNow() - data.serverTime) / 1000);
       const expectedTime = data.currentTime + elapsed;
       const actualTime = media.currentTime;
       const drift = expectedTime - actualTime; // positive = we're behind
+      const driftMs = drift * 1000;
 
-      const { rate, hardSeek } = rateCtrl.calculatePlaybackRate(drift * 1000);
+      // Jitter buffer: collect 2 samples before acting to smooth network jitter
+      const buffer = heartbeatBufferRef.current;
+      buffer.push(driftMs);
+      if (buffer.length < 2) return; // Wait for 2 samples
+
+      // Use median of buffered samples
+      const sorted = [...buffer].sort((a, b) => a - b);
+      const medianDrift = sorted[Math.floor(sorted.length / 2)];
+      heartbeatBufferRef.current = []; // Clear buffer
+
+      const { rate, hardSeek } = rateCtrl.calculatePlaybackRate(medianDrift);
 
       if (hardSeek) {
         isSyncingRef.current = true;
         media.currentTime = expectedTime;
         media.playbackRate = 1.0;
+        rateCtrl.reset();
         onSyncStatusChange?.("synced");
         isSyncingRef.current = false;
       } else if (rate !== 1.0) {
         media.playbackRate = rate;
         onSyncStatusChange?.("drifted");
-
-        // Reset rate after correction period
-        const correctionTime = Math.min((Math.abs(drift) * 1000) / 0.08, 5000);
-        setTimeout(() => {
-          if (mediaRef.current) {
-            mediaRef.current.playbackRate = 1.0;
-            onSyncStatusChange?.("synced");
-          }
-        }, correctionTime);
+        // PID controller handles convergence — no setTimeout reset needed
       } else {
+        media.playbackRate = 1.0;
         onSyncStatusChange?.("synced");
       }
     };

@@ -7,7 +7,7 @@ import { useSyncEngine } from "@/hooks/useSyncEngine";
 import { SyncStatus } from "@/lib/types";
 import SyncIndicator from "./SyncIndicator";
 import QualityBadge from "./QualityBadge";
-import SimulatedSpectrum from "./SimulatedSpectrum";
+import AudioSpectrum from "./AudioSpectrum";
 
 interface AudioPlayerProps {
   roomId: string;
@@ -15,6 +15,8 @@ interface AudioPlayerProps {
   socket: Socket | null;
   isHost: boolean;
   serverNow: () => number;
+  externalAudioRef?: any;
+  hideUI?: boolean;
 }
 
 export default function AudioPlayer({
@@ -23,17 +25,15 @@ export default function AudioPlayer({
   socket,
   isHost,
   serverNow,
+  externalAudioRef,
+  hideUI = false,
 }: AudioPlayerProps) {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const internalAudioRef = useRef<HTMLAudioElement>(null);
+  const audioRef = externalAudioRef || internalAudioRef;
   const hlsRef = useRef<Hls | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const animFrameRef = useRef<number>(0);
   const [currentQuality, setCurrentQuality] = useState("Auto");
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("synced");
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isWebAudioActive, setIsWebAudioActive] = useState(false);
-  const isWebAudioActiveRef = useRef(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
 
@@ -65,6 +65,15 @@ export default function AudioPlayer({
         }
       });
 
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (data.fatal) {
+          console.error("[HLS Audio] Fatal error:", data.type, data.details);
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            hls.recoverMediaError();
+          }
+        }
+      });
+
       hlsRef.current = hls;
     } else {
       audioRef.current.src = fullHlsUrl;
@@ -76,105 +85,20 @@ export default function AudioPlayer({
     };
   }, [fullHlsUrl]);
 
-  // Web Audio API waveform visualizer
+  // Track play/pause state
   useEffect(() => {
-    if (!audioRef.current || !canvasRef.current) return;
+    const audio = audioRef.current;
+    if (!audio) return;
 
-    let audioCtx: AudioContext | null = null;
-
-    const initVisualizer = () => {
-      if (audioCtx) return; // Already initialized
-
-      try {
-        audioCtx = new AudioContext();
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-
-        const source = audioCtx.createMediaElementSource(audioRef.current!);
-        source.connect(analyser);
-        analyser.connect(audioCtx.destination);
-
-        analyserRef.current = analyser;
-
-        // Start drawing
-        const canvas = canvasRef.current!;
-        const canvasCtx = canvas.getContext("2d")!;
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-
-        const draw = () => {
-          animFrameRef.current = requestAnimationFrame(draw);
-          analyser.getByteFrequencyData(dataArray);
-
-          let sum = 0;
-          for (let i = 0; i < bufferLength; i++) {
-            sum += dataArray[i];
-          }
-          if (sum > 0 && !isWebAudioActiveRef.current) {
-            isWebAudioActiveRef.current = true;
-            setIsWebAudioActive(true);
-          }
-
-          canvasCtx.fillStyle = "rgba(10, 10, 18, 0.85)";
-          canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-
-          const barWidth = (canvas.width / bufferLength) * 2.5;
-          let x = 0;
-
-          for (let i = 0; i < bufferLength; i++) {
-            const barHeight = (dataArray[i] / 255) * canvas.height * 0.9;
-
-            // Blue to purple gradient per bar
-            const hue = (i / bufferLength) * 60 + 220;
-            const lightness = 50 + (dataArray[i] / 255) * 20;
-            canvasCtx.fillStyle = `hsl(${hue}, 80%, ${lightness}%)`;
-
-            // Rounded top bars
-            const radius = Math.min(barWidth / 2, 3);
-            const yPos = canvas.height - barHeight;
-
-            canvasCtx.beginPath();
-            canvasCtx.moveTo(x, canvas.height);
-            canvasCtx.lineTo(x, yPos + radius);
-            canvasCtx.quadraticCurveTo(x, yPos, x + radius, yPos);
-            canvasCtx.lineTo(x + barWidth - radius, yPos);
-            canvasCtx.quadraticCurveTo(
-              x + barWidth,
-              yPos,
-              x + barWidth,
-              yPos + radius,
-            );
-            canvasCtx.lineTo(x + barWidth, canvas.height);
-            canvasCtx.fill();
-
-            x += barWidth + 1;
-          }
-        };
-
-        draw();
-      } catch (err) {
-        console.error("[AUDIO] Failed to initialize visualizer:", err);
-      }
-    };
-
-    // Initialize on first play
-    const onPlay = () => {
-      initVisualizer();
-      if (audioCtx && audioCtx.state === "suspended") {
-        audioCtx.resume().catch(() => {});
-      }
-      setIsPlaying(true);
-    };
+    const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
 
-    audioRef.current.addEventListener("play", onPlay);
-    audioRef.current.addEventListener("pause", onPause);
+    audio.addEventListener("play", onPlay);
+    audio.addEventListener("pause", onPause);
 
     return () => {
-      cancelAnimationFrame(animFrameRef.current);
-      audioRef.current?.removeEventListener("play", onPlay);
-      audioRef.current?.removeEventListener("pause", onPause);
-      audioCtx?.close();
+      audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("pause", onPause);
     };
   }, []);
 
@@ -214,22 +138,29 @@ export default function AudioPlayer({
     return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
+  if (hideUI) {
+    return (
+      <audio
+        ref={audioRef}
+        controls={isHost}
+        crossOrigin="anonymous"
+        className="hidden"
+        preload="auto"
+      />
+    );
+  }
+
   return (
     <div className="relative w-full bg-[#0a0a12] rounded-2xl overflow-hidden border border-white/[0.06] shadow-2xl shadow-black/50">
-      {/* Waveform Canvas */}
+      {/* Real Audio Spectrum Visualizer */}
       <div className="relative">
-        <canvas
-          ref={canvasRef}
-          width={800}
+        <AudioSpectrum
+          mediaRef={audioRef}
+          isPlaying={isPlaying}
           height={160}
-          className={`w-full h-40 rounded-t-2xl ${(!isWebAudioActive && isPlaying) ? 'hidden' : ''}`}
+          barCount={64}
+          colorTheme="blue-purple"
         />
-
-        {(!isWebAudioActive && isPlaying) && (
-          <div className="absolute inset-0 flex items-end overflow-hidden pb-4">
-            <SimulatedSpectrum isPlaying={isPlaying} />
-          </div>
-        )}
 
         {/* Overlay gradient */}
         <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a12] via-transparent to-transparent pointer-events-none" />
@@ -261,6 +192,7 @@ export default function AudioPlayer({
         <audio
           ref={audioRef}
           controls={isHost}
+          crossOrigin="anonymous"
           className="w-full h-10 [&::-webkit-media-controls-panel]:bg-white/5"
           preload="auto"
         />

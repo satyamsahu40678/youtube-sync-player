@@ -20,7 +20,7 @@ import YouTube, { YouTubeEvent, YouTubePlayer } from "react-youtube";
 
 import VideoPlayer from "@/components/VideoPlayer";
 import AudioPlayer from "@/components/AudioPlayer";
-import SimulatedSpectrum from "@/components/SimulatedSpectrum";
+import AudioSpectrum from "@/components/AudioSpectrum";
 
 const SERVER_URL =
   process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
@@ -58,6 +58,14 @@ export default function JoinPage() {
 
   const expectedPositionRef = useRef(0);
   const isPlayingRef = useRef(false);
+  const lastHeartbeatTimeRef = useRef(0); // Track when last heartbeat was received
+  // Use ref for mode to avoid socket reconnection on mode change
+  const modeRef = useRef<"youtube" | "file">("youtube");
+  const audioModeRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -126,10 +134,12 @@ export default function JoinPage() {
     setRoomState(null);
   };
 
+  // FIXED: Removed `mode` from dependency array — mode changes should NOT cause socket reconnection
   useEffect(() => {
     if (!roomId) return;
 
     const socketInstance = io(SERVER_URL, {
+      transports: ["websocket", "polling"],
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
@@ -140,7 +150,7 @@ export default function JoinPage() {
       console.log("✅ Connected to server");
 
       await clockSync.current.calibrate(socketInstance);
-      clockSync.current.startPeriodicSync(socketInstance);
+      clockSync.current.startPeriodicSync(socketInstance, 10000);
 
       setIsConnected(true);
       setSyncStatus("SYNCED");
@@ -199,16 +209,22 @@ export default function JoinPage() {
 
       if (state.status === "PLAYING") {
         const serverTime = clockSync.current.getServerTime();
-        const timeDelta = (serverTime - state.serverTimeUpdatedAt) / 1000;
+        const timeDelta = Math.max(
+          0,
+          (serverTime - state.serverTimeUpdatedAt) / 1000,
+        );
         expectedPositionRef.current = state.videoProgress + timeDelta;
+        lastHeartbeatTimeRef.current = serverTime;
         isPlayingRef.current = true;
-        if (mode === "youtube" && playerRef.current) {
+        if (modeRef.current === "youtube" && playerRef.current) {
+          playerRef.current.seekTo(expectedPositionRef.current, true);
           playerRef.current.playVideo();
         }
       } else {
         expectedPositionRef.current = state.videoProgress;
         isPlayingRef.current = false;
-        if (mode === "youtube" && playerRef.current) {
+        if (modeRef.current === "youtube" && playerRef.current) {
+          playerRef.current.seekTo(expectedPositionRef.current, true);
           playerRef.current.pauseVideo();
         }
       }
@@ -218,13 +234,14 @@ export default function JoinPage() {
       setParticipantCount(data.count);
     });
 
-    // NEW: Zero-latency heartbeat listener
+    // Heartbeat listener — use linear interpolation instead of crude += 0.5
     socketInstance.on(
       "sync:heartbeat",
       ({ progress, serverTime }: { progress: number; serverTime: number }) => {
-        const transitTimeMs = clockSync.current.getServerTime() - serverTime;
-        const transitTimeSec = Math.max(0, transitTimeMs / 1000);
+        const now = clockSync.current.getServerTime();
+        const transitTimeSec = Math.max(0, (now - serverTime) / 1000);
         expectedPositionRef.current = progress + transitTimeSec;
+        lastHeartbeatTimeRef.current = now;
       },
     );
 
@@ -244,15 +261,16 @@ export default function JoinPage() {
     setSocket(socketInstance);
 
     return () => {
+      clockSync.current.stopPeriodicSync();
       socketInstance.disconnect();
     };
-  }, [roomId, mode]);
+  }, [roomId]); // FIXED: Only roomId, not mode
 
-  // Sync Loop for YouTube
+  // Sync Loop for YouTube — uses linear interpolation between heartbeats
   useEffect(() => {
     const syncInterval = setInterval(async () => {
       if (
-        mode !== "youtube" ||
+        modeRef.current !== "youtube" ||
         !playerRef.current ||
         !isConnected ||
         !isPlayingRef.current
@@ -262,11 +280,14 @@ export default function JoinPage() {
       try {
         const currentVideoTime = await playerRef.current.getCurrentTime();
 
-        // Expected position is now accurately set by the 1s heartbeat
-        // We only advance it here between heartbeats slightly
-        expectedPositionRef.current += 0.5;
+        // Linear interpolation: advance expected position based on time since last heartbeat
+        const now = clockSync.current.getServerTime();
+        const timeSinceHeartbeat =
+          (now - lastHeartbeatTimeRef.current) / 1000;
+        const interpolatedPosition =
+          expectedPositionRef.current + Math.max(0, timeSinceHeartbeat);
 
-        const driftSeconds = expectedPositionRef.current - currentVideoTime;
+        const driftSeconds = interpolatedPosition - currentVideoTime;
         const driftMs = driftSeconds * 1000;
         setDrift(Math.abs(driftMs));
 
@@ -274,7 +295,8 @@ export default function JoinPage() {
           rateController.current.calculatePlaybackRate(driftMs);
 
         if (hardSeek) {
-          playerRef.current.seekTo(expectedPositionRef.current, true);
+          playerRef.current.seekTo(interpolatedPosition, true);
+          rateController.current.reset();
           setSyncStatus("RESYNCING");
         } else {
           // Playback rate nudging
@@ -290,14 +312,16 @@ export default function JoinPage() {
     }, 500);
 
     return () => clearInterval(syncInterval);
-  }, [isConnected, mode]);
+  }, [isConnected]);
 
   const onPlayerReady = (event: YouTubeEvent) => {
     playerRef.current = event.target;
-    // Force mute initially to bypass browser autoplay policies
+    // Start muted to bypass browser autoplay policies, user unmutes via overlay
     event.target.mute();
     event.target.setVolume(100);
+    setIsMuted(true);
     if (isPlayingRef.current) {
+      event.target.seekTo(expectedPositionRef.current, true);
       event.target.playVideo();
     }
   };
@@ -398,10 +422,16 @@ export default function JoinPage() {
               <div className="lg:col-span-2">
                 <div className="bg-white/[0.03] backdrop-blur-xl border border-white/[0.06] rounded-2xl overflow-hidden shadow-2xl relative">
                   {isAudioMode ? (
-                    // AUDIO MODE UI
+                    // AUDIO MODE UI with real spectrum
                     <div className="aspect-video bg-gradient-to-br from-[#0d0d18] to-[#0a0a12] flex flex-col items-center justify-center p-8 relative">
-                      <div className="absolute bottom-8 left-0 right-0 z-0 opacity-50">
-                        <SimulatedSpectrum isPlaying={isPlayingRef.current} />
+                      <div className="absolute bottom-0 left-0 right-0 z-0 opacity-60 px-4">
+                        <AudioSpectrum
+                          mediaRef={audioModeRef}
+                          isPlaying={isPlayingRef.current}
+                          height={120}
+                          barCount={48}
+                          colorTheme="cyan"
+                        />
                       </div>
                       <div className="w-32 h-32 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-6 relative z-10">
                         {isPlayingRef.current && (
@@ -419,10 +449,10 @@ export default function JoinPage() {
                           }
                         />
                       </div>
-                      <h3 className="text-xl font-bold text-gray-200 mb-2">
+                      <h3 className="text-xl font-bold text-gray-200 mb-2 relative z-10">
                         {videoTitle || "Audio Mode Active"}
                       </h3>
-                      <p className="text-gray-500 text-sm mb-8 text-center max-w-md">
+                      <p className="text-gray-500 text-sm mb-8 text-center max-w-md relative z-10">
                         Video playback is disabled to save data and battery.
                         Audio is fully synchronized with the host.
                       </p>
@@ -447,6 +477,8 @@ export default function JoinPage() {
                             socket={socket}
                             isHost={false}
                             serverNow={() => clockSync.current.getServerTime()}
+                            externalAudioRef={audioModeRef}
+                            hideUI={true}
                           />
                         ) : null}
                       </div>
@@ -463,13 +495,16 @@ export default function JoinPage() {
                             playerVars: {
                               autoplay: 0,
                               controls: 1,
-                              disablekb: 1,
                               modestbranding: 1,
                               rel: 0,
+                              cc_load_policy: 1,
+                              playsinline: 1,
+                              // FIXED: Removed disablekb — allow keyboard shortcuts
+                              // FIXED: Removed pointer-events-none — allow native controls
                             },
                           }}
                           onReady={onPlayerReady}
-                          className="absolute inset-0 w-full h-full pointer-events-none"
+                          className="absolute inset-0 w-full h-full"
                         />
                         {/* Unmute Overlay */}
                         {isMuted && (
@@ -514,7 +549,9 @@ export default function JoinPage() {
                               hlsUrl={roomState.hlsUrl}
                               socket={socket}
                               isHost={false}
-                              serverNow={() => clockSync.current.getServerTime()}
+                              serverNow={() =>
+                                clockSync.current.getServerTime()
+                              }
                             />
                           </div>
                         ) : (

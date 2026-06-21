@@ -24,6 +24,10 @@ const io = new SocketIOServer(httpServer, {
     methods: ["GET", "POST"],
   },
   maxHttpBufferSize: 1e7, // 10MB for socket messages
+  // Performance optimizations for multi-user
+  pingInterval: 10000,
+  pingTimeout: 5000,
+  perMessageDeflate: false, // Disable compression for lower latency
 });
 
 app.use(cors());
@@ -48,9 +52,13 @@ app.use(
 // ─── API Routes ─────────────────────────────────────────────────────
 app.use("/api/upload", uploadRouter);
 
-// In-memory room states for real-time fast sync (YouTube mode)
-// Note: We sync this to Redis occasionally for REST API usage
-// Removed local roomStates map in favor of state.ts
+// ─── Socket-to-Room Tracking (for disconnect cleanup) ──────────────
+// Map socket.id -> { roomId, userId }
+const socketRoomMap = new Map<string, { roomId: string; userId: string }>();
+
+// Heartbeat rate limiter: socket.id -> last heartbeat timestamp
+const heartbeatTimestamps = new Map<string, number>();
+const HEARTBEAT_MIN_INTERVAL_MS = 400; // Max ~2.5 heartbeats/sec per socket
 
 // Helper to save room info to Redis for persistence and REST API
 async function saveRoomToRedis(roomId: string, hostId: string, title: string) {
@@ -110,6 +118,9 @@ io.on("connection", (socket) => {
         socket.join(roomId);
         console.log(`[ROOM] User ${userId} joined room ${roomId}`);
 
+        // Track socket-to-room mapping for disconnect cleanup
+        socketRoomMap.set(socket.id, { roomId, userId });
+
         const roomState = getOrCreateRoomState(roomId);
         socket.emit("room:state", roomState as RoomStateMessage);
 
@@ -119,26 +130,32 @@ io.on("connection", (socket) => {
           count: participantCount,
         });
 
+        // Fire-and-forget Redis operations (don't block the event loop)
         const redis = getRedis();
-
-        // Save User to Redis
-        const userObj = {
-          id: userId,
-          email: userEmail || `${userId}@guest.local`,
-          name: userName || `Guest ${userId.slice(0, 4)}`,
-        };
-        await redis.hset(`users`, userId, JSON.stringify(userObj));
-
-        // Save Room to Redis if not exists
-        const existingRoom = await redis.hget(`rooms`, roomId);
-        if (!existingRoom) {
-          await saveRoomToRedis(roomId, userId, `Room ${roomId.slice(0, 8)}`);
-        }
-
-        // Add participant to room in Redis
-        await redis.sadd(`room:${roomId}:participants`, userId);
-        // Add to user's joined rooms history
-        await redis.sadd(`user:${userId}:history`, roomId);
+        Promise.all([
+          redis.hset(
+            `users`,
+            userId,
+            JSON.stringify({
+              id: userId,
+              email: userEmail || `${userId}@guest.local`,
+              name: userName || `Guest ${userId.slice(0, 4)}`,
+            }),
+          ),
+          redis.hget(`rooms`, roomId).then((existingRoom) => {
+            if (!existingRoom) {
+              return saveRoomToRedis(
+                roomId,
+                userId,
+                `Room ${roomId.slice(0, 8)}`,
+              );
+            }
+          }),
+          redis.sadd(`room:${roomId}:participants`, userId),
+          redis.sadd(`user:${userId}:history`, roomId),
+        ]).catch((error) => {
+          console.error("[REDIS] Error during room join:", error);
+        });
       } catch (error) {
         console.error("Error joining room:", error);
         socket.emit("error", { message: "Failed to join room" });
@@ -163,26 +180,25 @@ io.on("connection", (socket) => {
 
       io.to(roomId).emit("room:state", roomState as RoomStateMessage);
 
-      // Fetch real YouTube title
+      // Fetch real YouTube title asynchronously (don't block)
       try {
-        let videoTitle = `Room ${roomId.slice(0, 8)}`;
-        try {
-          const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
-          const response = await fetch(oembedUrl);
-          if (response.ok) {
-            const data = (await response.json()) as any;
-            if (data && data.title) {
-              videoTitle = data.title;
-              roomState.videoTitle = videoTitle;
-              io.to(roomId).emit("room:state", roomState as RoomStateMessage);
-            }
+        const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+        const response = await fetch(oembedUrl);
+        if (response.ok) {
+          const data = (await response.json()) as any;
+          if (data && data.title) {
+            roomState.videoTitle = data.title;
+            // Only emit title update if it actually changed
+            io.to(roomId).emit("room:state", roomState as RoomStateMessage);
           }
-        } catch (fetchErr) {
-          console.error("Failed to fetch YouTube oEmbed title", fetchErr);
         }
-        await updateRoomVideoInRedis(roomId, videoId, videoTitle);
+        await updateRoomVideoInRedis(
+          roomId,
+          videoId,
+          roomState.videoTitle || `Room ${roomId.slice(0, 8)}`,
+        );
       } catch (err) {
-        console.error("Failed to update room video in DB:", err);
+        console.error("Failed to fetch YouTube title:", err);
       }
     },
   );
@@ -223,59 +239,109 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Zero-latency heartbeat
-  socket.on("sync:heartbeat", (data: { roomId: string; progress?: number; currentTime?: number }) => {
-    if (!data.roomId) return; // Ignore malformed events missing roomId
+  // Zero-latency heartbeat with rate limiting
+  socket.on(
+    "sync:heartbeat",
+    (data: { roomId: string; progress?: number; currentTime?: number }) => {
+      if (!data.roomId) return; // Ignore malformed events missing roomId
 
-    const progress = data.progress ?? data.currentTime; // Handle both formats
-    if (progress === undefined || isNaN(progress)) return;
+      // Rate limit: max 1 heartbeat per HEARTBEAT_MIN_INTERVAL_MS per socket
+      const now = Date.now();
+      const lastBeat = heartbeatTimestamps.get(socket.id) || 0;
+      if (now - lastBeat < HEARTBEAT_MIN_INTERVAL_MS) return;
+      heartbeatTimestamps.set(socket.id, now);
 
-    const roomState = roomStates.get(data.roomId);
-    if (roomState) {
-      roomState.videoProgress = progress;
-      roomState.serverTimeUpdatedAt = Date.now();
+      const progress = data.progress ?? data.currentTime; // Handle both formats
+      if (progress === undefined || isNaN(progress)) return;
 
-      // Stamp with server time exactly before emitting, volatile to drop stale ones
-      socket.to(data.roomId).volatile.emit("sync:heartbeat", {
-        progress,
-        serverTime: Date.now(),
-        currentTime: progress, // send both for backwards compat
-      });
-    }
-  });
+      const roomState = roomStates.get(data.roomId);
+      if (roomState) {
+        roomState.videoProgress = progress;
+        roomState.serverTimeUpdatedAt = now;
+
+        // Stamp with server time exactly before emitting, volatile to drop stale ones
+        socket.to(data.roomId).volatile.emit("sync:heartbeat", {
+          progress,
+          serverTime: now,
+          currentTime: progress, // send both for backwards compat
+        });
+      }
+    },
+  );
 
   // Uploaded file playback sync
-  socket.on("sync:play", (data: { roomId: string; currentTime: number; serverTime: number }) => {
-    const roomState = roomStates.get(data.roomId);
-    if (roomState) {
-      roomState.status = "PLAYING";
-      roomState.videoProgress = data.currentTime;
-      roomState.serverTimeUpdatedAt = Date.now();
-      socket.to(data.roomId).emit("sync:play", data);
-    }
-  });
+  socket.on(
+    "sync:play",
+    (data: { roomId: string; currentTime: number; serverTime: number }) => {
+      const roomState = roomStates.get(data.roomId);
+      if (roomState) {
+        roomState.status = "PLAYING";
+        roomState.videoProgress = data.currentTime;
+        roomState.serverTimeUpdatedAt = Date.now();
+        socket.to(data.roomId).emit("sync:play", {
+          ...data,
+          serverTime: Date.now(), // Re-stamp with accurate server time
+        });
+      }
+    },
+  );
 
-  socket.on("sync:pause", (data: { roomId: string; currentTime: number }) => {
-    const roomState = roomStates.get(data.roomId);
-    if (roomState) {
-      roomState.status = "PAUSED";
-      roomState.videoProgress = data.currentTime;
-      roomState.serverTimeUpdatedAt = Date.now();
-      socket.to(data.roomId).emit("sync:pause", data);
-    }
-  });
+  socket.on(
+    "sync:pause",
+    (data: { roomId: string; currentTime: number }) => {
+      const roomState = roomStates.get(data.roomId);
+      if (roomState) {
+        roomState.status = "PAUSED";
+        roomState.videoProgress = data.currentTime;
+        roomState.serverTimeUpdatedAt = Date.now();
+        socket.to(data.roomId).emit("sync:pause", data);
+      }
+    },
+  );
 
-  socket.on("sync:seek", (data: { roomId: string; currentTime: number; serverTime: number }) => {
-    const roomState = roomStates.get(data.roomId);
-    if (roomState) {
-      roomState.videoProgress = data.currentTime;
-      roomState.serverTimeUpdatedAt = Date.now();
-      socket.to(data.roomId).emit("sync:seek", data);
-    }
-  });
+  socket.on(
+    "sync:seek",
+    (data: { roomId: string; currentTime: number; serverTime: number }) => {
+      const roomState = roomStates.get(data.roomId);
+      if (roomState) {
+        roomState.videoProgress = data.currentTime;
+        roomState.serverTimeUpdatedAt = Date.now();
+        socket.to(data.roomId).emit("sync:seek", {
+          ...data,
+          serverTime: Date.now(), // Re-stamp with accurate server time
+        });
+      }
+    },
+  );
 
+  // ─── Disconnect: Clean up socket-room mapping and Redis ──────────
   socket.on("disconnect", () => {
     console.log(`[SOCKET] User disconnected: ${socket.id}`);
+
+    // Clean up rate limiter
+    heartbeatTimestamps.delete(socket.id);
+
+    // Clean up participant tracking
+    const mapping = socketRoomMap.get(socket.id);
+    if (mapping) {
+      const { roomId, userId } = mapping;
+      socketRoomMap.delete(socket.id);
+
+      // Update participant count for remaining users
+      const participantCount =
+        io.sockets.adapter.rooms.get(roomId)?.size || 0;
+      io.to(roomId).emit("room:participant-count", {
+        count: participantCount,
+      });
+
+      // Remove from Redis participant set (fire-and-forget)
+      const redis = getRedis();
+      redis
+        .srem(`room:${roomId}:participants`, userId)
+        .catch((err) =>
+          console.error("[REDIS] Failed to remove participant:", err),
+        );
+    }
   });
 });
 
@@ -289,6 +355,9 @@ app.post("/rooms/create", async (req: Request, res: Response) => {
     const { roomId, hostId, title, hostName, hostEmail } = req.body;
     const redis = getRedis();
 
+    // Generate roomId if not provided
+    const finalRoomId = roomId || `room-${Date.now()}`;
+
     // Ensure user exists
     const userJson = await redis.hget(`users`, hostId);
     if (!userJson) {
@@ -301,11 +370,11 @@ app.post("/rooms/create", async (req: Request, res: Response) => {
     }
 
     await saveRoomToRedis(
-      roomId,
+      finalRoomId,
       hostId,
-      title || `Room ${roomId.slice(0, 8)}`,
+      title || `Room ${finalRoomId.slice(0, 8)}`,
     );
-    res.json({ roomId });
+    res.json({ roomId: finalRoomId });
   } catch (error) {
     console.error("Error creating room:", error);
     res.status(500).json({ error: "Failed to create room" });

@@ -22,6 +22,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} dark`}>
       <head>
+        {/* Google Identity Services — includes both id (One Tap) and oauth2 (Token) APIs */}
         <script src="https://accounts.google.com/gsi/client" async defer />
       </head>
       <body className="antialiased bg-[#0a0a12] text-white font-sans">
