@@ -33,12 +33,51 @@ echo -e "${GREEN}✓ Backend server started (PID: $SERVER_PID)${NC}"
 
 # Start frontend (Next.js production)
 cd "$PROJECT_ROOT/client" || exit 1
-npm run start > /tmp/youtube-sync-client-prod.log 2>&1 &
+PORT=3000 npm run start > /tmp/youtube-sync-client-prod.log 2>&1 &
 CLIENT_PID=$!
 echo -e "${GREEN}✓ Frontend server started (PID: $CLIENT_PID)${NC}"
 
-echo -e "${GREEN}✓ Production servers running!${NC}"
-echo -e "${BLUE}Frontend: http://localhost:3000${NC}"
-echo -e "${BLUE}Backend: http://localhost:4000${NC}"
+# Setup Nginx Proxy
+echo -e "${BLUE}Starting Nginx Proxy...${NC}"
+EXTERNAL_PORT=${PORT:-10000}
+cat > /tmp/nginx.conf <<EOF
+worker_processes 1;
+daemon off;
+events { worker_connections 1024; }
+http {
+    map \$http_upgrade \$connection_upgrade {
+        default upgrade;
+        '' close;
+    }
+    server {
+        listen $EXTERNAL_PORT;
+        
+        location /socket.io/ {
+            proxy_pass http://127.0.0.1:4000;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection \$connection_upgrade;
+            proxy_set_header Host \$host;
+        }
+        
+        location /api/ { proxy_pass http://127.0.0.1:4000; proxy_set_header Host \$host; }
+        location /hls/ { proxy_pass http://127.0.0.1:4000; proxy_set_header Host \$host; }
+        location /rooms/ { proxy_pass http://127.0.0.1:4000; proxy_set_header Host \$host; }
+        location /users/ { proxy_pass http://127.0.0.1:4000; proxy_set_header Host \$host; }
+        location /history/ { proxy_pass http://127.0.0.1:4000; proxy_set_header Host \$host; }
+        location /health { proxy_pass http://127.0.0.1:4000; proxy_set_header Host \$host; }
+        
+        location / {
+            proxy_pass http://127.0.0.1:3000;
+            proxy_set_header Host \$host;
+        }
+    }
+}
+EOF
 
-tail -f /tmp/youtube-sync-server-prod.log /tmp/youtube-sync-client-prod.log
+nginx -c /tmp/nginx.conf > /tmp/youtube-sync-nginx.log 2>&1 &
+NGINX_PID=$!
+echo -e "${GREEN}✓ Nginx Proxy started on port $EXTERNAL_PORT (PID: $NGINX_PID)${NC}"
+
+echo -e "${GREEN}✓ Production servers running!${NC}"
+tail -f /tmp/youtube-sync-server-prod.log /tmp/youtube-sync-client-prod.log /tmp/youtube-sync-nginx.log
