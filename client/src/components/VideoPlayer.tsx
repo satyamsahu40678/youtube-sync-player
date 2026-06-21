@@ -31,7 +31,7 @@ export default function VideoPlayer({
   const [currentTime, setCurrentTime] = useState(0);
 
   const serverUrl =
-    process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
+    process.env.NEXT_PUBLIC_SERVER_URL || "";
   const fullHlsUrl = hlsUrl.startsWith("http")
     ? hlsUrl
     : `${serverUrl}${hlsUrl}`;

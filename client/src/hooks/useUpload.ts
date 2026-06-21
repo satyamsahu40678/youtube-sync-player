@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 
 const SERVER_URL =
-  process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
+  process.env.NEXT_PUBLIC_SERVER_URL || "";
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY = 1000; // 1s base, exponential backoff

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { io as socketIO, Socket } from "socket.io-client";
 
 const SERVER_URL =
-  process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
+  process.env.NEXT_PUBLIC_SERVER_URL || "";
 
 /**
  * Socket.io connection hook with auto-reconnect and cleanup.

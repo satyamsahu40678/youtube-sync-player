@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN cd server && npm run build
 
 # Build client (with NEXT_PUBLIC_SERVER_URL set)
-ARG NEXT_PUBLIC_SERVER_URL=http://localhost:4000
+ARG NEXT_PUBLIC_SERVER_URL=""
 ENV NEXT_PUBLIC_SERVER_URL=$NEXT_PUBLIC_SERVER_URL
 RUN cd client && npm run build
 

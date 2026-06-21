@@ -27,7 +27,7 @@ echo -e "${GREEN}✓ Redis server started${NC}"
 
 # Start backend
 cd "$PROJECT_ROOT/server" || exit 1
-node dist/index.js > /tmp/youtube-sync-server-prod.log 2>&1 &
+PORT=4000 node dist/index.js > /tmp/youtube-sync-server-prod.log 2>&1 &
 SERVER_PID=$!
 echo -e "${GREEN}✓ Backend server started (PID: $SERVER_PID)${NC}"
 

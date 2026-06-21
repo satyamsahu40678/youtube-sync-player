@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 
 const SERVER_URL =
-  process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
+  process.env.NEXT_PUBLIC_SERVER_URL || "";
 
 /**
  * Network bandwidth estimation hook.

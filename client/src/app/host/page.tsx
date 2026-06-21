@@ -31,7 +31,7 @@ import AudioSpectrum from "@/components/AudioSpectrum";
 import { useUpload } from "@/hooks/useUpload";
 
 const SERVER_URL =
-  process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
+  process.env.NEXT_PUBLIC_SERVER_URL || "";
 
 interface RoomState {
   videoId: string | null;

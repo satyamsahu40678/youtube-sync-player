@@ -23,7 +23,7 @@ import AudioPlayer from "@/components/AudioPlayer";
 import AudioSpectrum from "@/components/AudioSpectrum";
 
 const SERVER_URL =
-  process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
+  process.env.NEXT_PUBLIC_SERVER_URL || "";
 
 export default function JoinPage() {
   const [socket, setSocket] = useState<Socket | null>(null);
