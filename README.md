@@ -15,7 +15,8 @@ Watch YouTube videos together with perfect synchronization. Host a stream, share
 
 ### Prerequisites
 - Node.js 20+
-- Docker & Docker Compose (for Redis)
+- Docker & Docker Compose (for Redis container used by BullMQ & Room persistence)
+- FFmpeg (for video/audio transcoding on the server)
 
 ### One Command Setup
 
@@ -28,168 +29,55 @@ This single command will:
 2. ✅ Create `.env` files with defaults
 3. ✅ Install all dependencies (client + server)
 4. ✅ Generate Prisma client
-5. ✅ Push database schema
-6. ✅ Start both development servers
+5. ✅ Push SQLite database schema
+6. ✅ Start both development servers (along with hot reloading)
+
+> 💡 **Note:** Ensure Redis is running for room metadata persistence and file uploading. You can start it via `make redis-start` (runs Docker container in background).
 
 Then open **http://localhost:3000** in your browser.
-
-### Prerequisites
-
-- **Node.js 20+** ([install via nvm](https://github.com/nvm-sh/nvm))
-- **npm 11+**
 
 ### Manual Setup
 
 ```bash
-# 1. Install dependencies
+# 1. Start Redis infrastructure container
+make redis-start
+
+# 2. Install dependencies
 make install-all
 
-# 2. Setup environment files
+# 3. Setup environment files
 make env-setup
 
-# 3. Generate Prisma client & push DB schema
+# 4. Generate Prisma client & push DB schema
 make generate
 make db-push
 
-# 4. Start development servers
+# 5. Start development servers
 make dev
 
-# 5. Open http://localhost:3000
+# 6. Open http://localhost:3000
 ```
 
 ---
 
 ## 🌟 Features
 
-### Core
-- ✅ **Host Live Streams** — Share any YouTube video with a unique room URL
-- ✅ **Real-Time Sync** — Sub-100ms drift maintained across all viewers
-- ✅ **Passive Viewer Interface** — Joiners can only control volume, host controls playback
-- ✅ **Authentication** — Email sign-up/sign-in + Google OAuth
-- ✅ **Room Management** — Create, join, and manage streaming sessions
+### Core Sync & Playback
+- ✅ **Host Live Streams** — Share any YouTube video or upload custom media files with a unique room URL.
+- ✅ **Real-Time Sync** — Sub-100ms drift maintained across all viewers using NTP clock calibration and PI controller playback tuning.
+- ✅ **Passive Viewer Interface** — Joiners sync automatically; only the host controls play, pause, and seeking.
+- ✅ **Authentication** — Secure accounts via Email signup/signin + Google OAuth.
+- ✅ **Room Management** — Persistent user rooms, active room lists, and history tracking.
 
-### Supported YouTube URL Formats
-```
-https://www.youtube.com/watch?v=dQw4w9WgXcQ
-https://youtu.be/dQw4w9WgXcQ
-https://youtu.be/-PXivr2hmMA?si=wZkD9nKYzRcehzNS
-https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=60s
-```
+### File Uploads & HLS Streaming
+- 📤 **Chunked Local Media Uploads** — Upload large video/audio files directly from host dashboard. Multer handles upload of chunks (up to 10MB each) asynchronously.
+- ⚡ **Background Transcoding Queue** — Assembled file is pushed to BullMQ + Redis queue, where a transcoding worker converts it into HLS (HTTP Live Streaming) segments.
+- 📶 **Adaptive Quality Switching** — Built-in client-side adaptive HLS stream loading with automatic quality badges.
 
-### Technical
-- 🔄 **NTP Clock Synchronization** — 5-sample calibration for ±3-5ms accuracy
-- 📊 **PI-Based Playback Rate Controller** — Smooth drift correction without seeking
-- 🌐 **WebSocket** — Socket.io with automatic fallback to long-polling
-- 💾 **SQLite Database** — Prisma ORM with easy migration
-- 🎨 **Dark Mode UI** — Premium glassmorphism design with animations
-- 📱 **Responsive** — Works on desktop, tablet, and mobile
-
----
-
-## 📖 Usage
-
-### Hosting a Stream
-
-1. **Sign Up / Sign In** at `http://localhost:3000`
-2. Click **"Host a Stream"**
-3. Paste a YouTube URL and click **Play**
-4. Copy the share URL and send it to viewers
-
-### Joining a Stream
-
-1. Open the share URL **or** go to `http://localhost:3000/join`
-2. Paste the room URL or room ID
-3. Video syncs automatically with the host
-
----
-
-## 🔑 Google Sign-In Setup (Optional)
-
-Google Sign-In uses the [Google Identity Services](https://developers.google.com/identity/gsi/web) popup flow. To enable it:
-
-### 1. Create OAuth Credentials
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-2. Create a new project (or select existing)
-3. Click **Create Credentials** → **OAuth 2.0 Client ID**
-4. Application type: **Web application**
-5. Add **Authorized JavaScript origins**:
-   - `http://localhost:3000` (development)
-   - Your production domain
-6. Copy the **Client ID**
-
-### 2. Configure Environment
-
-Add to `client/.env.local`:
-```env
-NEXT_PUBLIC_GOOGLE_CLIENT_ID=your_client_id_here.apps.googleusercontent.com
-```
-
-### 3. Restart
-
-```bash
-make restart
-```
-
-> **Note:** The app works fully without Google OAuth — email sign-in is always available.
-
----
-
-## 🛠️ Make Targets
-
-Run `make help` to see all available commands:
-
-```
-  Quick Start
-  quick-start       🚀 One command: setup + run (zero intervention)
-
-  Setup & Install
-  setup             Complete setup from scratch
-  install-all       Install dependencies for client and server
-  env-setup         Create .env files with defaults
-  check-node        Verify Node.js and npm are installed
-  check-deps        Verify all dependencies are installed
-
-  Development
-  dev               Run both servers with hot reload
-  dev-client        Run only the frontend
-  dev-server        Run only the backend
-
-  Database
-  generate          Generate Prisma client
-  migrate           Run database migrations
-  db-push           Push schema (dev only)
-  db-reset          ⚠️  Reset database
-  db-studio         Open Prisma Studio
-
-  Testing & Quality
-  test              Run end-to-end tests
-  lint              Run linter
-  format            Format code with Prettier
-
-  Production
-  build             Build for production
-  start             Start production servers
-
-  Utilities
-  health            Check if servers are running
-  status            Show processes on ports 3000/4000
-  open              Open app in browser
-  logs              Show server logs
-  kill-ports        Kill processes on ports 3000/4000
-  restart           Kill and restart servers
-
-  Cleanup
-  clean             Remove node_modules, builds, DB
-  clean-deps        Remove only node_modules
-  clean-db          Remove only database
-  clean-all         Deep clean everything
-
-  Info
-  version           Show version info
-  info              Show project quick reference
-  show-env          Display environment configuration
-```
+### Audio Visualization
+- 📊 **Real-time Audio Spectrum** — Canvas-based frequency visualizer.
+- 🎛️ **Web Audio API Integration** — Captures FFT frequency data for HLS streams dynamically with customized color themes.
+- 🌊 **Simulated Perlin Fallback** — Emulates soundwaves smoothly when iframe security or YouTube policies prevent raw audio stream access.
 
 ---
 
@@ -199,7 +87,7 @@ Run `make help` to see all available commands:
 youtube-sync-player/
 ├── VERSION                      # Version file (2.0.0)
 ├── README.md                    # This file
-├── Makefile                     # Build automation (30+ targets)
+├── Makefile                     # Build automation (35+ targets)
 │
 ├── scripts/
 │   ├── start-dev.sh            # Development startup script
@@ -212,24 +100,39 @@ youtube-sync-player/
 │   │   │   ├── page.tsx        # Landing page
 │   │   │   ├── signin/         # Sign-in page
 │   │   │   ├── signup/         # Sign-up page
-│   │   │   ├── host/           # Host dashboard
-│   │   │   └── join/           # Joiner dashboard
+│   │   │   ├── host/           # Host dashboard (supports YouTube & file upload)
+│   │   │   └── join/           # Joiner dashboard (synced playback/spectrum view)
+│   │   ├── components/
+│   │   │   ├── AudioPlayer.tsx      # Synced Audio playback with visualizer
+│   │   │   ├── AudioSpectrum.tsx    # Canvas Audio Spectrum Analyzer (Web Audio / Perlin Fallback)
+│   │   │   ├── VideoPlayer.tsx      # HLS Video Streaming player with adaptive rate controls
+│   │   │   ├── UploadProgress.tsx   # Visual status of file chunks upload & transcode stages
+│   │   │   ├── SyncIndicator.tsx    # Connection status indicator (Synced, Buffering, Drifted)
+│   │   │   └── MemberList.tsx       # Live room participant list with buffering status
 │   │   └── lib/
 │   │       ├── auth.ts         # Auth service (email + Google GIS)
-│   │       ├── sync.ts         # NTP clock sync engine
+│   │       ├── sync.ts         # NTP clock sync engine & PI Playback Rate controller
 │   │       ├── youtube.ts      # YouTube URL parsing
 │   │       └── types.ts        # TypeScript types
 │   └── .env.local
 │
 └── server/                      # Backend (Node.js + Express + Socket.io)
     ├── src/
-    │   ├── index.ts            # Main server + WebSocket handlers
+    │   ├── index.ts            # Main server, REST API, WebSocket event handler
     │   ├── db.ts               # Prisma client
-    │   └── types.ts            # TypeScript types
+    │   ├── state.ts            # Local Room synchronization states
+    │   ├── types.ts            # TypeScript types
+    │   ├── routes/
+    │   │   └── upload.ts       # Chunk upload receiver and BullMQ job enqueueing
+    │   ├── services/
+    │   │   └── redis.ts        # Redis client & BullMQ connection factory
+    │   └── workers/
+    │       └── transcodingWorker.ts # BullMQ worker converting uploaded media to HLS using FFmpeg
     ├── prisma/
-    │   └── schema.prisma       # Database schema
+    │   └── schema.prisma       # SQLite Database schema
     └── .env
 ```
+
 
 ---
 
