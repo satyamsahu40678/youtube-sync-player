@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { Socket } from "socket.io-client";
 import { PlaybackRateController } from "@/lib/sync";
 import { MediaState, SyncStatus } from "@/lib/types";
@@ -18,11 +18,6 @@ interface UseSyncEngineOptions {
  * Core sync engine hook.
  * HOST mode: captures play/pause/seek events from the media element and emits them via Socket.io.
  * VIEWER mode: receives sync events and applies them to the media element with drift correction.
- *
- * Improvements:
- * - Jitter buffer: averages 2-3 heartbeats before adjusting
- * - Adaptive hard-seek threshold based on RTT
- * - No more setTimeout-based rate reset (PID controller handles it)
  */
 export function useSyncEngine({
   roomId,
@@ -35,6 +30,8 @@ export function useSyncEngine({
   const rateControllerRef = useRef(new PlaybackRateController());
   const isSyncingRef = useRef(false); // Guard to prevent echo loops
   const heartbeatBufferRef = useRef<number[]>([]); // Jitter buffer for drift samples
+  const ignoreNextPauseRef = useRef(false);
+  const ignoreNextPlayRef = useRef(false);
 
   // ─── HOST MODE ──────────────────────────────────────────────────
   useEffect(() => {
@@ -43,15 +40,25 @@ export function useSyncEngine({
 
     const onPlay = () => {
       if (isSyncingRef.current) return;
-      socket.emit("sync:play", {
+      if (ignoreNextPlayRef.current) {
+        ignoreNextPlayRef.current = false;
+        return;
+      }
+      // Intercept local play and trigger room-wide prepare buffer cycle
+      ignoreNextPauseRef.current = true;
+      media.pause();
+      socket.emit("sync:request-prepare", {
         roomId,
         currentTime: media.currentTime,
-        serverTime: serverNow(),
       });
     };
 
     const onPause = () => {
       if (isSyncingRef.current) return;
+      if (ignoreNextPauseRef.current) {
+        ignoreNextPauseRef.current = false;
+        return;
+      }
       socket.emit("sync:pause", {
         roomId,
         currentTime: media.currentTime,
@@ -60,14 +67,25 @@ export function useSyncEngine({
 
     const onSeeked = () => {
       if (isSyncingRef.current) return;
-      socket.emit("sync:seek", {
-        roomId,
-        currentTime: media.currentTime,
-        serverTime: serverNow(),
-      });
+      // Seek while playing -> prepare/preload at seek target
+      if (!media.paused) {
+        ignoreNextPauseRef.current = true;
+        media.pause();
+        socket.emit("sync:request-prepare", {
+          roomId,
+          currentTime: media.currentTime,
+        });
+      } else {
+        // Seek while paused -> update frame instantly on all devices
+        socket.emit("sync:seek", {
+          roomId,
+          currentTime: media.currentTime,
+          serverTime: serverNow(),
+        });
+      }
     };
 
-    // Heartbeat: broadcast position every 500ms (was 2000ms — faster = lower latency)
+    // Heartbeat: broadcast position every 500ms
     const heartbeat = setInterval(() => {
       if (!media.paused && !media.ended) {
         socket.emit("sync:heartbeat", {
@@ -89,17 +107,78 @@ export function useSyncEngine({
     };
   }, [isHost, socket, serverNow, mediaRef, roomId]);
 
-  // ─── VIEWER MODE ────────────────────────────────────────────────
+  // ─── COORD & DRIFT SYNC LISTENERS (UNIFIED) ──────────────────────────
   useEffect(() => {
-    if (isHost || !socket || !mediaRef.current) return;
+    if (!socket || !mediaRef.current || !roomId) return;
     const media = mediaRef.current;
     const rateCtrl = rateControllerRef.current;
+
+    // Buffer preparation phase
+    const handlePrepare = (data: { progress: number }) => {
+      isSyncingRef.current = true;
+      media.currentTime = data.progress;
+      ignoreNextPauseRef.current = true;
+      media.pause();
+      isSyncingRef.current = false;
+      onSyncStatusChange?.("buffering");
+
+      const checkAndReport = () => {
+        if (media.readyState >= 3) {
+          socket.emit("sync:client-ready", { roomId });
+          return true;
+        }
+        return false;
+      };
+
+      if (checkAndReport()) return;
+
+      const onCanPlay = () => {
+        if (checkAndReport()) {
+          media.removeEventListener("canplay", onCanPlay);
+          media.removeEventListener("seeked", onSeekedReady);
+        }
+      };
+      const onSeekedReady = () => {
+        if (checkAndReport()) {
+          media.removeEventListener("canplay", onCanPlay);
+          media.removeEventListener("seeked", onSeekedReady);
+        }
+      };
+
+      media.addEventListener("canplay", onCanPlay);
+      media.addEventListener("seeked", onSeekedReady);
+    };
+
+    // Scheduled play execution
+    const handleScheduledPlay = (data: { startTime: number; startProgress: number }) => {
+      isSyncingRef.current = true;
+      const now = serverNow();
+      const delay = data.startTime - now;
+
+      if (delay > 0) {
+        onSyncStatusChange?.("synced");
+        setTimeout(() => {
+          isSyncingRef.current = true;
+          ignoreNextPlayRef.current = true;
+          media.play().catch(() => {});
+          isSyncingRef.current = false;
+        }, delay);
+      } else {
+        const elapsed = Math.max(0, -delay / 1000);
+        media.currentTime = data.startProgress + elapsed;
+        ignoreNextPlayRef.current = true;
+        media.play().catch(() => {});
+        onSyncStatusChange?.("synced");
+      }
+      isSyncingRef.current = false;
+    };
 
     const handlePlay = (data: MediaState) => {
       isSyncingRef.current = true;
       const elapsed = (serverNow() - data.serverTime) / 1000;
       const targetTime = data.currentTime + Math.max(0, elapsed);
       media.currentTime = targetTime;
+      ignoreNextPlayRef.current = true;
       media.play().catch(() => {});
       rateCtrl.reset();
       onSyncStatusChange?.("synced");
@@ -109,6 +188,7 @@ export function useSyncEngine({
     const handlePause = (data: MediaState) => {
       isSyncingRef.current = true;
       media.currentTime = data.currentTime;
+      ignoreNextPauseRef.current = true;
       media.pause();
       rateCtrl.reset();
       onSyncStatusChange?.("synced");
@@ -128,7 +208,7 @@ export function useSyncEngine({
       currentTime: number;
       serverTime: number;
     }) => {
-      if (media.paused) return;
+      if (media.paused || isSyncingRef.current) return;
 
       const elapsed = Math.max(0, (serverNow() - data.serverTime) / 1000);
       const expectedTime = data.currentTime + elapsed;
@@ -136,15 +216,13 @@ export function useSyncEngine({
       const drift = expectedTime - actualTime; // positive = we're behind
       const driftMs = drift * 1000;
 
-      // Jitter buffer: collect 2 samples before acting to smooth network jitter
       const buffer = heartbeatBufferRef.current;
       buffer.push(driftMs);
-      if (buffer.length < 2) return; // Wait for 2 samples
+      if (buffer.length < 2) return;
 
-      // Use median of buffered samples
       const sorted = [...buffer].sort((a, b) => a - b);
       const medianDrift = sorted[Math.floor(sorted.length / 2)];
-      heartbeatBufferRef.current = []; // Clear buffer
+      heartbeatBufferRef.current = [];
 
       const { rate, hardSeek } = rateCtrl.calculatePlaybackRate(medianDrift);
 
@@ -158,23 +236,29 @@ export function useSyncEngine({
       } else if (rate !== 1.0) {
         media.playbackRate = rate;
         onSyncStatusChange?.("drifted");
-        // PID controller handles convergence — no setTimeout reset needed
       } else {
         media.playbackRate = 1.0;
         onSyncStatusChange?.("synced");
       }
     };
 
-    socket.on("sync:play", handlePlay);
-    socket.on("sync:pause", handlePause);
-    socket.on("sync:seek", handleSeek);
-    socket.on("sync:heartbeat", handleHeartbeat);
+    socket.on("sync:prepare", handlePrepare);
+    socket.on("sync:scheduled-play", handleScheduledPlay);
+
+    if (!isHost) {
+      socket.on("sync:play", handlePlay);
+      socket.on("sync:pause", handlePause);
+      socket.on("sync:seek", handleSeek);
+      socket.on("sync:heartbeat", handleHeartbeat);
+    }
 
     return () => {
+      socket.off("sync:prepare", handlePrepare);
+      socket.off("sync:scheduled-play", handleScheduledPlay);
       socket.off("sync:play", handlePlay);
       socket.off("sync:pause", handlePause);
       socket.off("sync:seek", handleSeek);
       socket.off("sync:heartbeat", handleHeartbeat);
     };
-  }, [isHost, socket, serverNow, mediaRef, onSyncStatusChange]);
+  }, [isHost, socket, serverNow, mediaRef, roomId, onSyncStatusChange]);
 }

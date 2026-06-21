@@ -13,6 +13,7 @@ export interface RoomState {
   status: "PLAYING" | "PAUSED";
   videoProgress: number;
   serverTimeUpdatedAt: number;
+  isBuffering?: boolean;
 
   hlsStatus?: "waiting" | "uploading" | "transcoding" | "ready" | "error";
   fileType?: "video" | "audio" | null;

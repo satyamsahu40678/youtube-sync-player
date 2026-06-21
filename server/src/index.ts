@@ -52,9 +52,75 @@ app.use(
 // ─── API Routes ─────────────────────────────────────────────────────
 app.use("/api/upload", uploadRouter);
 
-// ─── Socket-to-Room Tracking (for disconnect cleanup) ──────────────
+// ─── Socket-to-Room Tracking (for disconnect cleanup)
 // Map socket.id -> { roomId, userId }
 const socketRoomMap = new Map<string, { roomId: string; userId: string }>();
+
+// Participant tracking for buffering readiness coordination
+interface Participant {
+  userId: string;
+  userName: string;
+  isHost: boolean;
+  isReady: boolean;
+}
+
+// Map roomId -> Map socketId -> Participant
+const roomSocketsMap = new Map<string, Map<string, Participant>>();
+
+// Map roomId -> Timeout for buffering fallback
+const roomPrepareTimeouts = new Map<string, NodeJS.Timeout>();
+
+function broadcastParticipants(roomId: string) {
+  const roomParticipants = roomSocketsMap.get(roomId);
+  if (roomParticipants) {
+    const list = Array.from(roomParticipants.values()).map((p) => ({
+      userId: p.userId,
+      userName: p.userName,
+      isHost: p.isHost,
+      isReady: p.isReady,
+    }));
+    io.to(roomId).emit("room:participants", { participants: list });
+  } else {
+    io.to(roomId).emit("room:participants", { participants: [] });
+  }
+}
+
+function triggerScheduledPlay(roomId: string, progress?: number) {
+  const timeoutId = roomPrepareTimeouts.get(roomId);
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+    roomPrepareTimeouts.delete(roomId);
+  }
+
+  const roomState = getOrCreateRoomState(roomId);
+  const targetProgress = progress !== undefined ? progress : roomState.videoProgress;
+
+  // Schedule play 1200ms in the future
+  const startTime = Date.now() + 1200;
+
+  roomState.status = "PLAYING";
+  roomState.isBuffering = false;
+  roomState.videoProgress = targetProgress;
+  roomState.serverTimeUpdatedAt = startTime;
+
+  // Reset participant readiness
+  const roomParticipants = roomSocketsMap.get(roomId);
+  if (roomParticipants) {
+    for (const p of roomParticipants.values()) {
+      p.isReady = false;
+    }
+  }
+
+  console.log(`[SYNC] Scheduled play triggered for room ${roomId} at ${startTime} (progress: ${targetProgress}s)`);
+
+  io.to(roomId).emit("room:state", roomState as RoomStateMessage);
+  io.to(roomId).emit("sync:scheduled-play", {
+    startTime,
+    startProgress: targetProgress,
+  });
+
+  broadcastParticipants(roomId);
+}
 
 // Heartbeat rate limiter: socket.id -> last heartbeat timestamp
 const heartbeatTimestamps = new Map<string, number>();
@@ -122,6 +188,22 @@ io.on("connection", (socket) => {
         socketRoomMap.set(socket.id, { roomId, userId });
 
         const roomState = getOrCreateRoomState(roomId);
+
+        // Track socket participant details in memory
+        let roomParticipants = roomSocketsMap.get(roomId);
+        if (!roomParticipants) {
+          roomParticipants = new Map();
+          roomSocketsMap.set(roomId, roomParticipants);
+        }
+
+        const isHost = userId.startsWith("host-") || roomParticipants.size === 0;
+        roomParticipants.set(socket.id, {
+          userId,
+          userName: userName || `Guest ${userId.slice(0, 4)}`,
+          isHost,
+          isReady: false,
+        });
+
         socket.emit("room:state", roomState as RoomStateMessage);
 
         const participantCount =
@@ -129,6 +211,8 @@ io.on("connection", (socket) => {
         io.to(roomId).emit("room:participant-count", {
           count: participantCount,
         });
+
+        broadcastParticipants(roomId);
 
         // Fire-and-forget Redis operations (don't block the event loop)
         const redis = getRedis();
@@ -314,6 +398,72 @@ io.on("connection", (socket) => {
     },
   );
 
+  socket.on("sync:request-prepare", (data: { roomId: string; currentTime: number }) => {
+    const { roomId, currentTime } = data;
+    const roomState = getOrCreateRoomState(roomId);
+
+    roomState.status = "PAUSED";
+    roomState.isBuffering = true;
+    roomState.videoProgress = currentTime;
+    roomState.serverTimeUpdatedAt = Date.now();
+
+    const roomParticipants = roomSocketsMap.get(roomId);
+    if (roomParticipants) {
+      for (const p of roomParticipants.values()) {
+        p.isReady = false;
+      }
+    }
+
+    console.log(`[SYNC] Prepare requested for room ${roomId} at ${currentTime}s`);
+
+    io.to(roomId).emit("room:state", roomState as RoomStateMessage);
+    io.to(roomId).emit("sync:prepare", { progress: currentTime });
+    broadcastParticipants(roomId);
+
+    const existingTimeout = roomPrepareTimeouts.get(roomId);
+    if (existingTimeout) clearTimeout(existingTimeout);
+
+    const timeout = setTimeout(() => {
+      console.log(`[SYNC] Fallback play triggered for room ${roomId} (timeout reached)`);
+      triggerScheduledPlay(roomId, currentTime);
+    }, 3500);
+    roomPrepareTimeouts.set(roomId, timeout);
+  });
+
+  socket.on("sync:client-ready", (data: { roomId: string }) => {
+    const { roomId } = data;
+    const roomParticipants = roomSocketsMap.get(roomId);
+    if (!roomParticipants) return;
+
+    const participant = roomParticipants.get(socket.id);
+    if (participant) {
+      participant.isReady = true;
+      console.log(`[SYNC] Client ready: ${participant.userName} (${socket.id}) in room ${roomId}`);
+    }
+
+    broadcastParticipants(roomId);
+
+    let allReady = true;
+    for (const p of roomParticipants.values()) {
+      if (!p.isReady) {
+        allReady = false;
+        break;
+      }
+    }
+
+    if (allReady) {
+      console.log(`[SYNC] All clients ready in room ${roomId}. Triggering play.`);
+      triggerScheduledPlay(roomId);
+    }
+  });
+
+  socket.on("sync:force-play", (data: { roomId: string }) => {
+    const { roomId } = data;
+    console.log(`[SYNC] Force play requested by host in room ${roomId}`);
+    const roomState = roomStates.get(roomId);
+    triggerScheduledPlay(roomId, roomState?.videoProgress);
+  });
+
   // ─── Disconnect: Clean up socket-room mapping and Redis ──────────
   socket.on("disconnect", () => {
     console.log(`[SOCKET] User disconnected: ${socket.id}`);
@@ -327,12 +477,22 @@ io.on("connection", (socket) => {
       const { roomId, userId } = mapping;
       socketRoomMap.delete(socket.id);
 
+      const roomParticipants = roomSocketsMap.get(roomId);
+      if (roomParticipants) {
+        roomParticipants.delete(socket.id);
+        if (roomParticipants.size === 0) {
+          roomSocketsMap.delete(roomId);
+        }
+      }
+
       // Update participant count for remaining users
       const participantCount =
         io.sockets.adapter.rooms.get(roomId)?.size || 0;
       io.to(roomId).emit("room:participant-count", {
         count: participantCount,
       });
+
+      broadcastParticipants(roomId);
 
       // Remove from Redis participant set (fire-and-forget)
       const redis = getRedis();

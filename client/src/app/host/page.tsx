@@ -39,11 +39,19 @@ interface RoomState {
   status: "PLAYING" | "PAUSED";
   videoProgress: number;
   serverTimeUpdatedAt: number;
+  isBuffering?: boolean;
 
   hlsStatus: "waiting" | "uploading" | "transcoding" | "ready" | "error";
   fileType: "video" | "audio" | null;
   hlsUrl: string | null;
   fileName: string | null;
+}
+
+interface Participant {
+  userId: string;
+  userName: string;
+  isHost: boolean;
+  isReady: boolean;
 }
 
 export default function HostPage() {
@@ -70,6 +78,7 @@ export default function HostPage() {
   // HLS/Upload State
   const [mode, setMode] = useState<"youtube" | "file">("youtube");
   const [roomState, setRoomState] = useState<RoomState | null>(null);
+  const [participants, setParticipants] = useState<Participant[]>([]);
   const {
     uploadFile,
     progress: uploadProgressPercent,
@@ -199,6 +208,41 @@ export default function HostPage() {
       console.log("❌ Disconnected from server");
     });
 
+    socketInstance.on("room:participants", (data: { participants: Participant[] }) => {
+      setParticipants(data.participants);
+    });
+
+    socketInstance.on("sync:prepare", (data: { progress: number }) => {
+      if (modeRef.current === "youtube" && playerRef.current) {
+        playerRef.current.seekTo(data.progress, true);
+        playerRef.current.pauseVideo();
+        setIsPlaying(false);
+        setTimeout(() => {
+          socketInstance.emit("sync:client-ready", { roomId: roomIdRef.current });
+        }, 800);
+      }
+    });
+
+    socketInstance.on("sync:scheduled-play", (data: { startTime: number; startProgress: number }) => {
+      if (modeRef.current === "youtube" && playerRef.current) {
+        const now = clockSync.current.getServerTime();
+        const delay = data.startTime - now;
+        if (delay > 0) {
+          setTimeout(() => {
+            setIsPlaying(true);
+            if (playerRef.current) {
+              playerRef.current.playVideo();
+            }
+          }, delay);
+        } else {
+          const elapsed = Math.max(0, -delay / 1000);
+          playerRef.current.seekTo(data.startProgress + elapsed, true);
+          setIsPlaying(true);
+          playerRef.current.playVideo();
+        }
+      }
+    });
+
     setSocket(socketInstance);
 
     return () => {
@@ -319,26 +363,31 @@ export default function HostPage() {
       }
       setIsPlaying(false);
     } else {
-      if (mode === "youtube" && playerRef.current)
-        playerRef.current.playVideo();
       if (socket) {
-        socket.emit("room:playback-control", {
+        socket.emit("sync:request-prepare", {
           roomId,
-          status: "PLAYING",
-          progress: currentProgress,
+          currentTime: currentProgress,
         });
       }
-      setIsPlaying(true);
     }
   };
 
   const handleSeek = async (newProgress: number) => {
     setProgress(newProgress);
     if (mode === "youtube" && playerRef.current) {
-      playerRef.current.seekTo(newProgress, true);
-    }
-    if (socket) {
-      socket.emit("room:seek", { roomId, progress: newProgress });
+      if (isPlaying) {
+        if (socket) {
+          socket.emit("sync:request-prepare", {
+            roomId,
+            currentTime: newProgress,
+          });
+        }
+      } else {
+        playerRef.current.seekTo(newProgress, true);
+        if (socket) {
+          socket.emit("room:seek", { roomId, progress: newProgress });
+        }
+      }
     }
   };
 
@@ -359,17 +408,16 @@ export default function HostPage() {
     event.target.setVolume(volume);
     if (isMuted) event.target.mute();
     setDuration(event.target.getDuration());
-    if (startTime) {
-      event.target.seekTo(startTime, true);
-    }
-    event.target.playVideo();
-    setIsPlaying(true);
+    
+    const startProgress = startTime || 0;
+    event.target.seekTo(startProgress, true);
+    event.target.pauseVideo();
+    setIsPlaying(false);
 
     if (socket) {
-      socket.emit("room:playback-control", {
+      socket.emit("sync:request-prepare", {
         roomId,
-        status: "PLAYING",
-        progress: startTime || 0,
+        currentTime: startProgress,
       });
     }
   };
@@ -731,6 +779,66 @@ export default function HostPage() {
                       </div>
                     )}
                   </div>
+
+                  {/* Glassmorphic Buffering & Syncing Overlay */}
+                  {roomState?.isBuffering && (
+                    <div className="absolute inset-0 bg-black/75 backdrop-blur-md flex flex-col items-center justify-center z-20 transition-all duration-300">
+                      <div className="max-w-md w-full px-6 py-8 bg-white/[0.03] border border-white/[0.08] rounded-2xl shadow-2xl flex flex-col items-center text-center space-y-6 mx-4">
+                        <div className="relative w-16 h-16 flex items-center justify-center">
+                          <div className="absolute inset-0 rounded-full border-4 border-emerald-500/20 animate-pulse" />
+                          <div className="w-12 h-12 rounded-full border-4 border-emerald-500 border-t-transparent animate-spin" />
+                        </div>
+
+                        <div className="space-y-2">
+                          <h3 className="text-xl font-bold text-white tracking-wide">Syncing Playback</h3>
+                          <p className="text-gray-400 text-xs max-w-xs">
+                            Pre-loading media on all devices to ensure perfect zero-delay synchronization.
+                          </p>
+                        </div>
+
+                        <div className="w-full bg-[#07070c] border border-white/[0.04] rounded-xl p-4 text-left space-y-3 max-h-48 overflow-y-auto">
+                          <p className="text-[10px] text-gray-500 uppercase tracking-wider font-bold">
+                            Device Readiness
+                          </p>
+                          <div className="space-y-2">
+                            {participants.map((p) => (
+                              <div key={p.userId} className="flex items-center justify-between text-sm py-1 border-b border-white/[0.02] last:border-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium truncate max-w-[150px]">{p.userName}</span>
+                                  {p.isHost && (
+                                    <span className="px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-bold rounded">
+                                      HOST
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  {p.isReady ? (
+                                    <>
+                                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                      <span className="text-emerald-400 text-xs font-semibold">Ready</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+                                      <span className="text-blue-400 text-xs">Buffering</span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => socket?.emit("sync:force-play", { roomId })}
+                          className="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-green-600 hover:shadow-lg hover:shadow-emerald-500/20 rounded-xl text-xs font-bold transition-all duration-200"
+                        >
+                          Force Play Now
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                 </div>
               </div>
 

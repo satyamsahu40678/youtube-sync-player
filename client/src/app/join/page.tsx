@@ -22,6 +22,13 @@ import VideoPlayer from "@/components/VideoPlayer";
 import AudioPlayer from "@/components/AudioPlayer";
 import AudioSpectrum from "@/components/AudioSpectrum";
 
+interface Participant {
+  userId: string;
+  userName: string;
+  isHost: boolean;
+  isReady: boolean;
+}
+
 const SERVER_URL =
   process.env.NEXT_PUBLIC_SERVER_URL || "";
 
@@ -47,6 +54,7 @@ export default function JoinPage() {
   const [error, setError] = useState("");
   const [participantCount, setParticipantCount] = useState(1);
   const [isAudioMode, setIsAudioMode] = useState(false);
+  const [participants, setParticipants] = useState<Participant[]>([]);
 
   // HLS State
   const [mode, setMode] = useState<"youtube" | "file">("youtube");
@@ -256,6 +264,41 @@ export default function JoinPage() {
       console.log("❌ Disconnected from server");
       setIsConnected(false);
       setSyncStatus("RESYNCING");
+    });
+
+    socketInstance.on("room:participants", (data: { participants: Participant[] }) => {
+      setParticipants(data.participants);
+    });
+
+    socketInstance.on("sync:prepare", (data: { progress: number }) => {
+      if (modeRef.current === "youtube" && playerRef.current) {
+        playerRef.current.seekTo(data.progress, true);
+        playerRef.current.pauseVideo();
+        isPlayingRef.current = false;
+        setTimeout(() => {
+          socketInstance.emit("sync:client-ready", { roomId });
+        }, 800);
+      }
+    });
+
+    socketInstance.on("sync:scheduled-play", (data: { startTime: number; startProgress: number }) => {
+      if (modeRef.current === "youtube" && playerRef.current) {
+        const now = clockSync.current.getServerTime();
+        const delay = data.startTime - now;
+        if (delay > 0) {
+          setTimeout(() => {
+            isPlayingRef.current = true;
+            if (playerRef.current) {
+              playerRef.current.playVideo();
+            }
+          }, delay);
+        } else {
+          const elapsed = Math.max(0, -delay / 1000);
+          playerRef.current.seekTo(data.startProgress + elapsed, true);
+          isPlayingRef.current = true;
+          playerRef.current.playVideo();
+        }
+      }
     });
 
     setSocket(socketInstance);
@@ -569,6 +612,58 @@ export default function JoinPage() {
                           Waiting for host...
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {/* Glassmorphic Buffering & Syncing Overlay */}
+                  {roomState?.isBuffering && (
+                    <div className="absolute inset-0 bg-black/75 backdrop-blur-md flex flex-col items-center justify-center z-20 transition-all duration-300">
+                      <div className="max-w-md w-full px-6 py-8 bg-white/[0.03] border border-white/[0.08] rounded-2xl shadow-2xl flex flex-col items-center text-center space-y-6 mx-4">
+                        <div className="relative w-16 h-16 flex items-center justify-center">
+                          <div className="absolute inset-0 rounded-full border-4 border-blue-500/20 animate-pulse" />
+                          <div className="w-12 h-12 rounded-full border-4 border-blue-500 border-t-transparent animate-spin" />
+                        </div>
+
+                        <div className="space-y-2">
+                          <h3 className="text-xl font-bold text-white tracking-wide">Syncing Playback</h3>
+                          <p className="text-gray-400 text-xs max-w-xs">
+                            Pre-loading media on all devices to ensure perfect zero-delay synchronization.
+                          </p>
+                        </div>
+
+                        <div className="w-full bg-[#07070c] border border-white/[0.04] rounded-xl p-4 text-left space-y-3 max-h-48 overflow-y-auto">
+                          <p className="text-[10px] text-gray-500 uppercase tracking-wider font-bold">
+                            Device Readiness
+                          </p>
+                          <div className="space-y-2">
+                            {participants.map((p) => (
+                              <div key={p.userId} className="flex items-center justify-between text-sm py-1 border-b border-white/[0.02] last:border-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium truncate max-w-[150px]">{p.userName}</span>
+                                  {p.isHost && (
+                                    <span className="px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-bold rounded">
+                                      HOST
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  {p.isReady ? (
+                                    <>
+                                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                      <span className="text-emerald-400 text-xs font-semibold">Ready</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+                                      <span className="text-blue-400 text-xs">Buffering</span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
 

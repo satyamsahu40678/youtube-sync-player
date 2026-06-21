@@ -7,6 +7,7 @@ export interface RoomState {
   status: "PLAYING" | "PAUSED";
   videoProgress: number; // in seconds
   serverTimeUpdatedAt: number; // Epoch ms
+  isBuffering?: boolean;
 
   // File Upload / HLS Fields
   hlsStatus: "waiting" | "uploading" | "transcoding" | "ready" | "error";
@@ -32,6 +33,7 @@ export interface RoomStateMessage {
   status: "PLAYING" | "PAUSED";
   videoProgress: number;
   serverTimeUpdatedAt: number;
+  isBuffering?: boolean;
 
   // HLS fields (sent when file upload mode is active)
   hlsStatus?: "waiting" | "uploading" | "transcoding" | "ready" | "error";
