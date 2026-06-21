@@ -29,8 +29,8 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-# Install procps and ffmpeg for start-prod.sh and transcoding
-RUN apt-get update && apt-get install -y procps ffmpeg && rm -rf /var/lib/apt/lists/*
+# Install procps, ffmpeg, and redis-server for start-prod.sh, transcoding, and database
+RUN apt-get update && apt-get install -y procps ffmpeg redis-server && rm -rf /var/lib/apt/lists/*
 
 # Copy package files
 COPY --from=build /app/client/package*.json ./client/

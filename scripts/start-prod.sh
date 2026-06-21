@@ -17,7 +17,13 @@ echo -e "${BLUE}Starting production servers...${NC}"
 
 # Kill any existing processes
 pkill -f "node" || true
+pkill -f "redis-server" || true
 sleep 1
+
+# Start Redis
+echo -e "${BLUE}Starting Redis server...${NC}"
+redis-server --daemonize yes
+echo -e "${GREEN}✓ Redis server started${NC}"
 
 # Start backend
 cd "$PROJECT_ROOT/server" || exit 1
