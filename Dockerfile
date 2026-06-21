@@ -25,12 +25,12 @@ ENV NEXT_PUBLIC_SERVER_URL=$NEXT_PUBLIC_SERVER_URL
 RUN cd client && npm run build
 
 # Production image
-FROM node:20-bookworm-slim
+FROM node:20-slim
 
 WORKDIR /app
 
-# Install procps, ffmpeg, and redis-server for start-prod.sh, transcoding, and database
-RUN apt-get update && apt-get install -y procps ffmpeg redis-server && rm -rf /var/lib/apt/lists/*
+# Install ffmpeg, procps (for ps command), redis-server, and nginx
+RUN apt-get update && apt-get install -y procps ffmpeg redis-server nginx && rm -rf /var/lib/apt/lists/*
 
 # Copy package files
 COPY --from=build /app/client/package*.json ./client/
