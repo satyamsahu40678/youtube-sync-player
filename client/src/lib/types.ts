@@ -1,5 +1,7 @@
 export type SyncStatus = "synced" | "drifted" | "buffering" | "disconnected";
 
+export type PlaybackStatus = "PLAYING" | "PAUSED" | "PREPARING";
+
 export interface SyncMetrics {
   rtt: number; // Round-trip time in ms
   clockOffset: number; // Clock offset in ms
@@ -10,7 +12,7 @@ export interface SyncMetrics {
 export interface RoomState {
   videoId: string | null;
   videoTitle?: string | null;
-  status: "PLAYING" | "PAUSED";
+  status: PlaybackStatus;
   videoProgress: number;
   serverTimeUpdatedAt: number;
   isBuffering?: boolean;
@@ -25,3 +27,16 @@ export interface MediaState {
   currentTime: number;
   serverTime: number;
 }
+
+/** Server broadcasts scheduled play instruction */
+export interface ScheduledPlayMessage {
+  startTime: number; // Server epoch ms — the exact moment to call play()
+  startProgress: number; // Video position in seconds to play from
+}
+
+/** Client reports buffer health when signaling readiness */
+export interface ClientReadyMessage {
+  roomId: string;
+  bufferedAheadSec: number; // seconds of video buffered ahead of current position
+}
+

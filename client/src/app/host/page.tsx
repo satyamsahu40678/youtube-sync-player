@@ -16,7 +16,7 @@ import {
   VolumeX,
   Upload,
 } from "lucide-react";
-import { NTPClockSync } from "@/lib/sync";
+import { NTPClockSync, ScheduledPlayExecutor } from "@/lib/sync";
 import {
   extractYouTubeVideoId,
   isValidYouTubeUrl,
@@ -98,6 +98,7 @@ export default function HostPage() {
   const modeRef = useRef<"youtube" | "file">("youtube");
   const roomIdRef = useRef("");
   const audioModeRef = useRef<HTMLAudioElement>(null);
+  const scheduledPlayRef = useRef(new ScheduledPlayExecutor());
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -217,29 +218,65 @@ export default function HostPage() {
         playerRef.current.seekTo(data.progress, true);
         playerRef.current.pauseVideo();
         setIsPlaying(false);
+        scheduledPlayRef.current.cancel();
+
+        // Verify YouTube has actually buffered before reporting ready
+        const checkYouTubeBuffer = async () => {
+          if (!playerRef.current) return;
+          try {
+            const state = await playerRef.current.getPlayerState();
+            const loadedFraction = await playerRef.current.getVideoLoadedFraction();
+            const duration = await playerRef.current.getDuration();
+            const currentTime = await playerRef.current.getCurrentTime();
+            const loadedTime = loadedFraction * duration;
+            const bufferedAhead = loadedTime - currentTime;
+
+            // YouTube state: 5=CUED, 1=PLAYING, 2=PAUSED, 3=BUFFERING
+            // Ready when paused/cued AND at least 1s buffered ahead
+            if ((state === 2 || state === 5 || state === -1) && bufferedAhead >= 1.0) {
+              socketInstance.emit("sync:client-ready", {
+                roomId: roomIdRef.current,
+                bufferedAheadSec: bufferedAhead,
+              });
+              return;
+            }
+          } catch (e) {
+            // Player might not be ready yet
+          }
+          // Retry after 200ms
+          setTimeout(checkYouTubeBuffer, 200);
+        };
+
+        // Start checking after a short initial delay for seek to complete
+        setTimeout(checkYouTubeBuffer, 300);
+
+        // Fallback: if still not ready after 2.5s, report ready anyway
         setTimeout(() => {
-          socketInstance.emit("sync:client-ready", { roomId: roomIdRef.current });
-        }, 800);
+          socketInstance.emit("sync:client-ready", {
+            roomId: roomIdRef.current,
+            bufferedAheadSec: 0,
+          });
+        }, 2500);
       }
     });
 
     socketInstance.on("sync:scheduled-play", (data: { startTime: number; startProgress: number }) => {
       if (modeRef.current === "youtube" && playerRef.current) {
-        const now = clockSync.current.getServerTime();
-        const delay = data.startTime - now;
-        if (delay > 0) {
-          setTimeout(() => {
+        scheduledPlayRef.current.scheduleAt(
+          data.startTime,
+          () => clockSync.current.getServerTime(),
+          () => {
+            const now = clockSync.current.getServerTime();
+            const elapsed = Math.max(0, (now - data.startTime) / 1000);
             setIsPlaying(true);
             if (playerRef.current) {
+              if (elapsed > 0.05) {
+                playerRef.current.seekTo(data.startProgress + elapsed, true);
+              }
               playerRef.current.playVideo();
             }
-          }, delay);
-        } else {
-          const elapsed = Math.max(0, -delay / 1000);
-          playerRef.current.seekTo(data.startProgress + elapsed, true);
-          setIsPlaying(true);
-          playerRef.current.playVideo();
-        }
+          },
+        );
       }
     });
 
@@ -247,6 +284,7 @@ export default function HostPage() {
 
     return () => {
       clockSync.current.stopPeriodicSync();
+      scheduledPlayRef.current.cancel();
       socketInstance.disconnect();
     };
   }, []);

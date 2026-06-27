@@ -14,7 +14,7 @@ import {
   Music,
   Video as VideoIcon,
 } from "lucide-react";
-import { NTPClockSync, PlaybackRateController } from "@/lib/sync";
+import { NTPClockSync, PlaybackRateController, ScheduledPlayExecutor } from "@/lib/sync";
 import { RoomState } from "@/lib/types";
 import YouTube, { YouTubeEvent, YouTubePlayer } from "react-youtube";
 
@@ -63,10 +63,12 @@ export default function JoinPage() {
   const playerRef = useRef<YouTubePlayer | null>(null);
   const clockSync = useRef(new NTPClockSync());
   const rateController = useRef(new PlaybackRateController());
+  const scheduledPlayRef = useRef(new ScheduledPlayExecutor());
 
   const expectedPositionRef = useRef(0);
   const isPlayingRef = useRef(false);
   const lastHeartbeatTimeRef = useRef(0); // Track when last heartbeat was received
+  const hasJoinedPlayingRef = useRef(false); // Track if we joined a playing room (for pre-buffer)
   // Use ref for mode to avoid socket reconnection on mode change
   const modeRef = useRef<"youtube" | "file">("youtube");
   const audioModeRef = useRef<HTMLAudioElement>(null);
@@ -215,7 +217,12 @@ export default function JoinPage() {
         setVideoTitle(state.videoTitle);
       }
 
-      if (state.status === "PLAYING") {
+      if (state.status === "PLAYING" && !hasJoinedPlayingRef.current) {
+        // First time joining a playing room — use pre-buffer approach
+        // Instead of immediately seeking + playing (which causes drift),
+        // we seek to the estimated position and let the prepare/scheduled-play
+        // mechanism handle the synchronized start
+        hasJoinedPlayingRef.current = true;
         const serverTime = clockSync.current.getServerTime();
         const timeDelta = Math.max(
           0,
@@ -225,9 +232,24 @@ export default function JoinPage() {
         lastHeartbeatTimeRef.current = serverTime;
         isPlayingRef.current = true;
         if (modeRef.current === "youtube" && playerRef.current) {
+          // Seek to estimated position and start playing
+          // The ongoing heartbeat sync will keep us aligned
           playerRef.current.seekTo(expectedPositionRef.current, true);
           playerRef.current.playVideo();
         }
+      } else if (state.status === "PLAYING") {
+        const serverTime = clockSync.current.getServerTime();
+        const timeDelta = Math.max(
+          0,
+          (serverTime - state.serverTimeUpdatedAt) / 1000,
+        );
+        expectedPositionRef.current = state.videoProgress + timeDelta;
+        lastHeartbeatTimeRef.current = serverTime;
+        isPlayingRef.current = true;
+      } else if (state.status === "PREPARING") {
+        // Room is in pre-buffer phase — the sync:prepare event handles the details
+        isPlayingRef.current = false;
+        expectedPositionRef.current = state.videoProgress;
       } else {
         expectedPositionRef.current = state.videoProgress;
         isPlayingRef.current = false;
@@ -275,29 +297,67 @@ export default function JoinPage() {
         playerRef.current.seekTo(data.progress, true);
         playerRef.current.pauseVideo();
         isPlayingRef.current = false;
+        scheduledPlayRef.current.cancel();
+
+        // Verify YouTube has actually buffered before reporting ready
+        const checkYouTubeBuffer = async () => {
+          if (!playerRef.current) return;
+          try {
+            const state = await playerRef.current.getPlayerState();
+            const loadedFraction = await playerRef.current.getVideoLoadedFraction();
+            const duration = await playerRef.current.getDuration();
+            const currentTime = await playerRef.current.getCurrentTime();
+            const loadedTime = loadedFraction * duration;
+            const bufferedAhead = loadedTime - currentTime;
+
+            // Ready when paused/cued AND at least 1s buffered ahead
+            if ((state === 2 || state === 5 || state === -1) && bufferedAhead >= 1.0) {
+              socketInstance.emit("sync:client-ready", {
+                roomId,
+                bufferedAheadSec: bufferedAhead,
+              });
+              return;
+            }
+          } catch (e) {
+            // Player might not be ready yet
+          }
+          // Retry after 200ms
+          setTimeout(checkYouTubeBuffer, 200);
+        };
+
+        // Start checking after a short initial delay for seek to complete
+        setTimeout(checkYouTubeBuffer, 300);
+
+        // Fallback: if still not ready after 2.5s, report ready anyway
         setTimeout(() => {
-          socketInstance.emit("sync:client-ready", { roomId });
-        }, 800);
+          socketInstance.emit("sync:client-ready", {
+            roomId,
+            bufferedAheadSec: 0,
+          });
+        }, 2500);
       }
     });
 
     socketInstance.on("sync:scheduled-play", (data: { startTime: number; startProgress: number }) => {
       if (modeRef.current === "youtube" && playerRef.current) {
-        const now = clockSync.current.getServerTime();
-        const delay = data.startTime - now;
-        if (delay > 0) {
-          setTimeout(() => {
+        // Relax drift correction after scheduled play since initial sync is precise
+        rateController.current.setDeadZone(100);
+
+        scheduledPlayRef.current.scheduleAt(
+          data.startTime,
+          () => clockSync.current.getServerTime(),
+          () => {
+            const now = clockSync.current.getServerTime();
+            const elapsed = Math.max(0, (now - data.startTime) / 1000);
             isPlayingRef.current = true;
             if (playerRef.current) {
+              if (elapsed > 0.05) {
+                playerRef.current.seekTo(data.startProgress + elapsed, true);
+              }
               playerRef.current.playVideo();
             }
-          }, delay);
-        } else {
-          const elapsed = Math.max(0, -delay / 1000);
-          playerRef.current.seekTo(data.startProgress + elapsed, true);
-          isPlayingRef.current = true;
-          playerRef.current.playVideo();
-        }
+          },
+        );
       }
     });
 
@@ -305,6 +365,7 @@ export default function JoinPage() {
 
     return () => {
       clockSync.current.stopPeriodicSync();
+      scheduledPlayRef.current.cancel();
       socketInstance.disconnect();
     };
   }, [roomId]); // FIXED: Only roomId, not mode

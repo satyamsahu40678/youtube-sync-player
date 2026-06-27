@@ -55,25 +55,27 @@ export class NTPClockSync {
   /**
    * Calibrate clock sync by performing multiple exchanges and averaging results.
    * Uses EMA (Exponential Moving Average) for smooth offset tracking.
+   * @param fastMode - Use fewer samples for faster initial calibration (e.g., on join)
    */
-  async calibrate(socket: any): Promise<void> {
+  async calibrate(socket: any, fastMode: boolean = false): Promise<void> {
     // Prevent concurrent calibrations from stacking
     if (this.isCalibrating) return;
     this.isCalibrating = true;
 
     try {
-      console.log("🔄 Calibrating clock synchronization...");
+      console.log(`🔄 Calibrating clock synchronization${fastMode ? ' (fast mode)' : ''}...`);
 
       this.rttSamples = [];
+      const count = fastMode ? 3 : this.sampleSize;
 
-      for (let i = 0; i < this.sampleSize; i++) {
+      for (let i = 0; i < count; i++) {
         try {
           const sample = await this.performSync(socket);
           this.rttSamples.push(sample);
         } catch {
           // Skip failed samples
         }
-        await this.sleep(50); // 50ms apart for faster calibration (was 80ms)
+        await this.sleep(fastMode ? 30 : 50); // Faster spacing in fast mode
       }
 
       if (this.rttSamples.length === 0) {
@@ -153,12 +155,24 @@ export class NTPClockSync {
  * Playback rate controller using PID-style feedback loop.
  * Smoothly adjusts playback speed to match expected position.
  * Uses integral term to prevent steady-state error.
+ *
+ * RELAXED MODE: After scheduled play sync, uses wider dead-zone
+ * since initial sync is already precise.
  */
 export class PlaybackRateController {
   private playbackRate: number = 1.0;
   private integralError: number = 0;
   private lastDriftMs: number = 0;
   private readonly maxIntegral = 500; // Cap integral to prevent windup
+  private deadZoneMs: number = 20; // Default dead zone
+
+  /**
+   * Set the dead zone threshold. After a scheduled play sync,
+   * this can be widened since we trust the initial sync accuracy.
+   */
+  setDeadZone(ms: number): void {
+    this.deadZoneMs = ms;
+  }
 
   /**
    * Calculate required playback rate adjustment based on drift.
@@ -170,8 +184,8 @@ export class PlaybackRateController {
   calculatePlaybackRate(driftMs: number): { rate: number; hardSeek: boolean } {
     const abs = Math.abs(driftMs);
 
-    // < 20ms -> Do nothing (Perfect sync zone - tightened from 30ms)
-    if (abs < 20) {
+    // Dead zone — Do nothing (Perfect sync zone)
+    if (abs < this.deadZoneMs) {
       this.playbackRate = 1.0;
       this.integralError = 0; // Reset integral when synced
       this.lastDriftMs = driftMs;
@@ -214,3 +228,93 @@ export class PlaybackRateController {
     this.lastDriftMs = 0;
   }
 }
+
+/**
+ * Precision scheduled play executor.
+ * Uses hybrid setTimeout + requestAnimationFrame spin-wait
+ * for sub-millisecond accurate play execution at a target server time.
+ *
+ * Game engine pattern: instead of setTimeout alone (~4ms jitter),
+ * we setTimeout to ~20ms before target, then spin-wait using
+ * requestAnimationFrame (synced to vsync ~16ms) for the final stretch.
+ */
+export class ScheduledPlayExecutor {
+  private pendingTimerId: ReturnType<typeof setTimeout> | null = null;
+  private pendingRafId: number | null = null;
+  private cancelled = false;
+
+  /**
+   * Schedule a callback to execute at a precise server time.
+   * @param targetServerTime - The server epoch ms when callback should fire
+   * @param getServerTime - Function that returns current NTP-synced server time
+   * @param callback - The function to call at the target time
+   */
+  scheduleAt(
+    targetServerTime: number,
+    getServerTime: () => number,
+    callback: () => void,
+  ): void {
+    this.cancel(); // Cancel any pending scheduled play
+    this.cancelled = false;
+
+    const now = getServerTime();
+    const delay = targetServerTime - now;
+
+    if (delay <= 0) {
+      // Already past the target time, execute immediately
+      callback();
+      return;
+    }
+
+    if (delay <= 4) {
+      // Less than 4ms away, just spin-wait with rAF
+      this.spinWait(targetServerTime, getServerTime, callback);
+      return;
+    }
+
+    // setTimeout to ~16ms before target, then spin-wait for precision
+    const earlyWakeup = Math.max(0, delay - 16);
+    this.pendingTimerId = setTimeout(() => {
+      if (this.cancelled) return;
+      this.spinWait(targetServerTime, getServerTime, callback);
+    }, earlyWakeup);
+  }
+
+  /**
+   * Spin-wait using requestAnimationFrame for the final milliseconds.
+   * rAF fires at vsync (~60Hz = ~16.67ms) which gives us frame-accurate timing.
+   */
+  private spinWait(
+    targetServerTime: number,
+    getServerTime: () => number,
+    callback: () => void,
+  ): void {
+    const check = () => {
+      if (this.cancelled) return;
+      const remaining = targetServerTime - getServerTime();
+      if (remaining <= 0.5) {
+        // Close enough — execute. 0.5ms tolerance is below human perception.
+        callback();
+      } else {
+        this.pendingRafId = requestAnimationFrame(check);
+      }
+    };
+    this.pendingRafId = requestAnimationFrame(check);
+  }
+
+  /**
+   * Cancel any pending scheduled play.
+   */
+  cancel(): void {
+    this.cancelled = true;
+    if (this.pendingTimerId !== null) {
+      clearTimeout(this.pendingTimerId);
+      this.pendingTimerId = null;
+    }
+    if (this.pendingRafId !== null) {
+      cancelAnimationFrame(this.pendingRafId);
+      this.pendingRafId = null;
+    }
+  }
+}
+

@@ -4,7 +4,7 @@ import express, { Request, Response } from "express";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import path from "path";
-import { ClockSyncResponse, RoomState, RoomStateMessage } from "./types";
+import { ClockSyncResponse, RoomState, RoomStateMessage, ClientReadyMessage, ScheduledPlayMessage } from "./types";
 
 // Import services and routes from our new architecture
 import { getRedis, closeRedis } from "./services/redis";
@@ -69,6 +69,8 @@ const roomSocketsMap = new Map<string, Map<string, Participant>>();
 
 // Map roomId -> Timeout for buffering fallback
 const roomPrepareTimeouts = new Map<string, NodeJS.Timeout>();
+// Map roomId -> Warning timeout (2s before force play)
+const roomWarnTimeouts = new Map<string, NodeJS.Timeout>();
 
 function broadcastParticipants(roomId: string) {
   const roomParticipants = roomSocketsMap.get(roomId);
@@ -86,17 +88,24 @@ function broadcastParticipants(roomId: string) {
 }
 
 function triggerScheduledPlay(roomId: string, progress?: number) {
-  const timeoutId = roomPrepareTimeouts.get(roomId);
-  if (timeoutId) {
-    clearTimeout(timeoutId);
+  // Clear any pending timeouts
+  const timeoutIds = roomPrepareTimeouts.get(roomId);
+  if (timeoutIds) {
+    clearTimeout(timeoutIds);
     roomPrepareTimeouts.delete(roomId);
+  }
+  // Also clear warning timeout
+  const warnId = roomWarnTimeouts.get(roomId);
+  if (warnId) {
+    clearTimeout(warnId);
+    roomWarnTimeouts.delete(roomId);
   }
 
   const roomState = getOrCreateRoomState(roomId);
   const targetProgress = progress !== undefined ? progress : roomState.videoProgress;
 
-  // Schedule play 1200ms in the future
-  const startTime = Date.now() + 1200;
+  // Schedule play 800ms in the future (reduced from 1200ms since clients are pre-buffered)
+  const startTime = Date.now() + 800;
 
   roomState.status = "PLAYING";
   roomState.isBuffering = false;
@@ -111,13 +120,15 @@ function triggerScheduledPlay(roomId: string, progress?: number) {
     }
   }
 
-  console.log(`[SYNC] Scheduled play triggered for room ${roomId} at ${startTime} (progress: ${targetProgress}s)`);
+  const readyCount = roomParticipants ? Array.from(roomParticipants.values()).filter(p => p.isReady).length : 0;
+  const totalCount = roomParticipants ? roomParticipants.size : 0;
+  console.log(`[SYNC] Scheduled play triggered for room ${roomId} at ${startTime} (progress: ${targetProgress}s, ${readyCount}/${totalCount} were ready)`);
 
   io.to(roomId).emit("room:state", roomState as RoomStateMessage);
   io.to(roomId).emit("sync:scheduled-play", {
     startTime,
     startProgress: targetProgress,
-  });
+  } as ScheduledPlayMessage);
 
   broadcastParticipants(roomId);
 }
@@ -292,7 +303,7 @@ io.on("connection", (socket) => {
     "room:playback-control",
     (data: {
       roomId: string;
-      status: "PLAYING" | "PAUSED";
+      status: "PLAYING" | "PAUSED" | "PREPARING";
       progress: number;
     }) => {
       const { roomId, status, progress } = data;
@@ -402,7 +413,7 @@ io.on("connection", (socket) => {
     const { roomId, currentTime } = data;
     const roomState = getOrCreateRoomState(roomId);
 
-    roomState.status = "PAUSED";
+    roomState.status = "PREPARING";
     roomState.isBuffering = true;
     roomState.videoProgress = currentTime;
     roomState.serverTimeUpdatedAt = Date.now();
@@ -420,26 +431,43 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("sync:prepare", { progress: currentTime });
     broadcastParticipants(roomId);
 
+    // Clear existing timeouts
     const existingTimeout = roomPrepareTimeouts.get(roomId);
     if (existingTimeout) clearTimeout(existingTimeout);
+    const existingWarn = roomWarnTimeouts.get(roomId);
+    if (existingWarn) clearTimeout(existingWarn);
+
+    // 2-tier timeout: warn at 2s, force at 4s
+    const warnTimeout = setTimeout(() => {
+      const rp = roomSocketsMap.get(roomId);
+      if (rp) {
+        const notReady = Array.from(rp.values()).filter(p => !p.isReady);
+        if (notReady.length > 0) {
+          console.log(`[SYNC] Warning: ${notReady.length} client(s) still buffering in room ${roomId}`);
+          io.to(roomId).emit("sync:prepare-warning", {
+            slowClients: notReady.map(p => p.userName),
+          });
+        }
+      }
+    }, 2000);
+    roomWarnTimeouts.set(roomId, warnTimeout);
 
     const timeout = setTimeout(() => {
-      console.log(`[SYNC] Fallback play triggered for room ${roomId} (timeout reached)`);
+      console.log(`[SYNC] Fallback play triggered for room ${roomId} (4s timeout reached)`);
       triggerScheduledPlay(roomId, currentTime);
-    }, 3500);
+    }, 4000);
     roomPrepareTimeouts.set(roomId, timeout);
   });
 
-  socket.on("sync:client-ready", (data: { roomId: string }) => {
-    const { roomId } = data;
+  socket.on("sync:client-ready", (data: { roomId: string; bufferedAheadSec?: number }) => {
+    const { roomId, bufferedAheadSec } = data;
     const roomParticipants = roomSocketsMap.get(roomId);
     if (!roomParticipants) return;
 
     const participant = roomParticipants.get(socket.id);
     if (participant) {
       participant.isReady = true;
-      console.log(`[SYNC] Client ready: ${participant.userName} (${socket.id}) in room ${roomId}`);
-    }
+      console.log(`[SYNC] Client ready: ${participant.userName} (${socket.id}) in room ${roomId}${bufferedAheadSec !== undefined ? ` (buffered ${bufferedAheadSec.toFixed(1)}s ahead)` : ''}`);    }
 
     broadcastParticipants(roomId);
 

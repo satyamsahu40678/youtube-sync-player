@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { Socket } from "socket.io-client";
-import { PlaybackRateController } from "@/lib/sync";
+import { PlaybackRateController, ScheduledPlayExecutor } from "@/lib/sync";
 import { MediaState, SyncStatus } from "@/lib/types";
 
 interface UseSyncEngineOptions {
@@ -15,9 +15,28 @@ interface UseSyncEngineOptions {
 }
 
 /**
+ * Utility: get seconds of media buffered ahead of current position.
+ */
+function getBufferedAheadSec(media: HTMLVideoElement | HTMLAudioElement): number {
+  if (!media.buffered || media.buffered.length === 0) return 0;
+  const currentTime = media.currentTime;
+  for (let i = 0; i < media.buffered.length; i++) {
+    if (media.buffered.start(i) <= currentTime && media.buffered.end(i) > currentTime) {
+      return media.buffered.end(i) - currentTime;
+    }
+  }
+  return 0;
+}
+
+/**
  * Core sync engine hook.
  * HOST mode: captures play/pause/seek events from the media element and emits them via Socket.io.
  * VIEWER mode: receives sync events and applies them to the media element with drift correction.
+ *
+ * Uses the pre-buffer + scheduled play pattern for 0ms latency illusion:
+ * 1. On play/seek, all clients pause and pre-buffer at the target position
+ * 2. Once all clients report "ready", server broadcasts a precise future timestamp
+ * 3. All clients use ScheduledPlayExecutor to start playback at exactly the same moment
  */
 export function useSyncEngine({
   roomId,
@@ -28,6 +47,7 @@ export function useSyncEngine({
   onSyncStatusChange,
 }: UseSyncEngineOptions) {
   const rateControllerRef = useRef(new PlaybackRateController());
+  const scheduledPlayRef = useRef(new ScheduledPlayExecutor());
   const isSyncingRef = useRef(false); // Guard to prevent echo loops
   const heartbeatBufferRef = useRef<number[]>([]); // Jitter buffer for drift samples
   const ignoreNextPauseRef = useRef(false);
@@ -112,10 +132,12 @@ export function useSyncEngine({
     if (!socket || !mediaRef.current || !roomId) return;
     const media = mediaRef.current;
     const rateCtrl = rateControllerRef.current;
+    const scheduledPlay = scheduledPlayRef.current;
 
-    // Buffer preparation phase
+    // Buffer preparation phase — seek to target, pause, verify buffer, report ready
     const handlePrepare = (data: { progress: number }) => {
       isSyncingRef.current = true;
+      scheduledPlay.cancel(); // Cancel any pending scheduled play
       media.currentTime = data.progress;
       ignoreNextPauseRef.current = true;
       media.pause();
@@ -123,8 +145,13 @@ export function useSyncEngine({
       onSyncStatusChange?.("buffering");
 
       const checkAndReport = () => {
-        if (media.readyState >= 3) {
-          socket.emit("sync:client-ready", { roomId });
+        // Check both readyState and actual buffer health
+        const bufferedAhead = getBufferedAheadSec(media);
+        if (media.readyState >= 3 && bufferedAhead >= 0.5) {
+          socket.emit("sync:client-ready", {
+            roomId,
+            bufferedAheadSec: bufferedAhead,
+          });
           return true;
         }
         return false;
@@ -132,45 +159,60 @@ export function useSyncEngine({
 
       if (checkAndReport()) return;
 
+      // Wait for buffer to fill
       const onCanPlay = () => {
         if (checkAndReport()) {
           media.removeEventListener("canplay", onCanPlay);
           media.removeEventListener("seeked", onSeekedReady);
+          clearTimeout(fallbackTimer);
         }
       };
       const onSeekedReady = () => {
         if (checkAndReport()) {
           media.removeEventListener("canplay", onCanPlay);
           media.removeEventListener("seeked", onSeekedReady);
+          clearTimeout(fallbackTimer);
         }
       };
+
+      // Fallback: if events don't fire within 2s, report ready anyway
+      const fallbackTimer = setTimeout(() => {
+        media.removeEventListener("canplay", onCanPlay);
+        media.removeEventListener("seeked", onSeekedReady);
+        const bufferedAhead = getBufferedAheadSec(media);
+        socket.emit("sync:client-ready", {
+          roomId,
+          bufferedAheadSec: bufferedAhead,
+        });
+      }, 2000);
 
       media.addEventListener("canplay", onCanPlay);
       media.addEventListener("seeked", onSeekedReady);
     };
 
-    // Scheduled play execution
+    // Scheduled play execution — precision timer for simultaneous playback
     const handleScheduledPlay = (data: { startTime: number; startProgress: number }) => {
-      isSyncingRef.current = true;
-      const now = serverNow();
-      const delay = data.startTime - now;
+      // Relax drift correction after scheduled play since we trust the sync
+      rateCtrl.setDeadZone(100);
 
-      if (delay > 0) {
-        onSyncStatusChange?.("synced");
-        setTimeout(() => {
+      scheduledPlay.scheduleAt(
+        data.startTime,
+        serverNow,
+        () => {
           isSyncingRef.current = true;
+          // Compensate for any time elapsed since startTime
+          const now = serverNow();
+          const elapsed = Math.max(0, (now - data.startTime) / 1000);
+          if (elapsed > 0.05) {
+            // If we're more than 50ms late, adjust position
+            media.currentTime = data.startProgress + elapsed;
+          }
           ignoreNextPlayRef.current = true;
           media.play().catch(() => {});
+          onSyncStatusChange?.("synced");
           isSyncingRef.current = false;
-        }, delay);
-      } else {
-        const elapsed = Math.max(0, -delay / 1000);
-        media.currentTime = data.startProgress + elapsed;
-        ignoreNextPlayRef.current = true;
-        media.play().catch(() => {});
-        onSyncStatusChange?.("synced");
-      }
-      isSyncingRef.current = false;
+        },
+      );
     };
 
     const handlePlay = (data: MediaState) => {
@@ -187,6 +229,7 @@ export function useSyncEngine({
 
     const handlePause = (data: MediaState) => {
       isSyncingRef.current = true;
+      scheduledPlay.cancel(); // Cancel any pending scheduled play
       media.currentTime = data.currentTime;
       ignoreNextPauseRef.current = true;
       media.pause();
@@ -253,6 +296,7 @@ export function useSyncEngine({
     }
 
     return () => {
+      scheduledPlay.cancel();
       socket.off("sync:prepare", handlePrepare);
       socket.off("sync:scheduled-play", handleScheduledPlay);
       socket.off("sync:play", handlePlay);
@@ -262,3 +306,4 @@ export function useSyncEngine({
     };
   }, [isHost, socket, serverNow, mediaRef, roomId, onSyncStatusChange]);
 }
+
